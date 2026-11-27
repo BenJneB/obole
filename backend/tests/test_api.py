@@ -265,14 +265,19 @@ def test_backup_zip(client, jpeg, data_dir):
 
 
 def test_stats(client):
-    create(client, country="France", quantity=2, estimated_value=3.0)
-    create(client, country="france", quantity=1, estimated_value=None, object_type="banknote")
+    create(client, country="France", quantity=2, estimated_value=3.0, year=1998, condition="SUP",
+           tags="euro, album 1", acquired_price=5, numista_id=1001)
+    create(client, country="france", quantity=1, estimated_value=None, object_type="banknote", year=1998,
+           tags="Euro")
+    create(client, country="Japan", year=1867, acquired_price=2.5)
     create(client, country="Japan")
     stats = client.get("/api/stats").json()
     assert stats == {
-        "items": 3, "total_quantity": 4, "countries": 2,
-        "by_type": {"coin": 2, "banknote": 1}, "by_country": {"France": 2, "Japan": 1},
-        "estimated_value_total": 6.0,
+        "items": 4, "total_quantity": 5, "countries": 2,
+        "by_type": {"coin": 3, "banknote": 1}, "by_country": {"France": 2, "Japan": 2},
+        "by_year": {"1867": 1, "1998": 2}, "without_year": 1,
+        "by_condition": {"": 3, "SUP": 1}, "by_tag": {"Euro": 2, "album 1": 1}, "identified": 1,
+        "estimated_value_total": 6.0, "acquired_price_total": 7.5,
     }
 
 

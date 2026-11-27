@@ -372,6 +372,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-autostart.ps1        
 
 **PC éteint ou Tailscale déconnecté :** l'appli s'ouvre quand même (elle est gardée sur le téléphone) mais affiche « Serveur injoignable ». Les photos déjà vues restent visibles.
 
+**Astuces d'utilisation :**
+- **Mode série** (en bas de l'écran *Ajouter*) : pour numériser un album d'affilée. Après chaque ajout, l'appli revient directement aux photos, et l'emplacement, les tags et la date d'acquisition sont repris de l'objet précédent.
+- **Doublons** : une fiche Numista déjà présente dans la collection est signalée (« Déjà dans la collection ») ; après l'avoir choisie, **+1 exemplaire** augmente la quantité de l'objet existant au lieu d'en créer un nouveau. Une fiche couvre souvent plusieurs années : vérifie l'année.
+- **Tags** : tape un tag puis Entrée (ou une virgule) ; les tags déjà utilisés sont proposés. Sur une fiche, toucher un tag affiche tous les objets qui le portent.
+- **Filtres** (*Collection* > **Filtres**) : période, état, tag, emplacement, avec ou sans fiche Numista. L'onglet **Stats** montre la répartition par type, pays, décennie ou siècle, état et tag ; chaque barre ouvre la collection filtrée.
+
 ---
 
 ## 8. Mettre à jour le serveur
@@ -406,7 +412,10 @@ Toutes tes données sont dans le dossier **`data/`** (base SQLite et photos), r�
 
 - **Méthode simple, disponible dès maintenant :** arrête le serveur, puis copie tout le dossier `data/` sur une clé USB ou un cloud personnel.
 - **Depuis l'appli (sans arrêter le serveur) :** *Réglages* > **Sauvegarde complète** télécharge `obole-backup-<date>.zip` (copie cohérente de la base + toutes les photos). **Export CSV** (s'ouvre dans Excel) et **Export JSON** donnent la liste lisible. Sur le PC, les mêmes fichiers sont à <http://127.0.0.1:8000/api/backup.zip>, `/api/export.csv` et `/api/export.json`.
-- **Restaurer :** serveur arrêté, remettre le dossier `data/` en place (ou extraire `backup.zip` dans `data/`).
+- **Sauvegarde automatique (par défaut) :** le serveur crée lui-même `obole-auto-<date>.zip` une fois par jour **si la collection a changé**, et au démarrage s'il a raté l'échéance (PC éteint). Les 5 plus récentes sont gardées. Réglages dans `.env` : `BACKUP_INTERVAL_HOURS` (0 = désactivée), `BACKUP_KEEP`, `BACKUP_DIR` (défaut `data/backups`). *Réglages* > **Sauvegarde automatique** affiche la dernière sauvegarde et propose **Sauvegarder maintenant**.
+  - Une copie sur le même disque ne protège pas d'une panne ou d'un vol du PC : mets `BACKUP_DIR` sur un dossier synchronisé (OneDrive…) ou une clé USB toujours branchée, ou copie le dossier de temps en temps.
+  - Chaque ZIP contient toutes les photos : prévoir l'espace disque (taille de `data/photos` × `BACKUP_KEEP`).
+- **Restaurer :** serveur arrêté, remettre le dossier `data/` en place (ou extraire un `.zip` de sauvegarde dans `data/`).
 
 ---
 

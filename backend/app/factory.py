@@ -1,12 +1,14 @@
 """Construction de l'application FastAPI (utilisée par main.py et par les tests)."""
 
+import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI
 
-from . import storage
+from . import backup, storage
 from .config import Settings, get_settings
 from .db import init_db, make_engine
 from .deps import AppState
@@ -46,7 +48,17 @@ def create_app(
         removed = storage.purge_old_uploads(data_dir)
         if removed:
             log.info("%d envoi(s) de photos expiré(s) supprimé(s)", removed)
+        task = None
+        if settings.backup_interval_hours > 0:
+            task = asyncio.create_task(backup.scheduler(
+                data_dir, settings.backup_path, engine,
+                settings.backup_interval_hours, settings.backup_keep, state.backup_lock,
+            ))
         yield
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         engine.dispose()
 
     app = FastAPI(title="Obole", version="0.1.0", lifespan=lifespan)

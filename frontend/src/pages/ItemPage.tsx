@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { api, type Item, type PhotoSide } from '../api.ts'
 import ItemForm from '../components/ItemForm.tsx'
-import { ConfirmButton, ErrorMessage, Notice } from '../components/ui.tsx'
+import { splitTags } from '../tags.ts'
+import { ConfirmButton, ErrorMessage } from '../components/ui.tsx'
 import { CONDITIONS, formatDate, formatEuro, itemTitle, typeLabel } from '../format.ts'
 
 const SIDE_LABELS: Record<PhotoSide, string> = { obverse: 'Avers', reverse: 'Revers', other: 'Photo' }
@@ -12,7 +13,9 @@ export default function ItemPage() {
   const itemId = Number(id)
   const navigate = useNavigate()
   const location = useLocation()
-  const justAdded = Boolean((location.state as { added?: boolean } | null)?.added)
+  const navState = location.state as { added?: boolean; incremented?: number } | null
+  const justAdded = Boolean(navState?.added)
+  const incremented = navState?.incremented
   const [item, setItem] = useState<Item | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
@@ -138,8 +141,8 @@ export default function ItemPage() {
     ['Prix payé', item.acquired_price != null ? formatEuro(item.acquired_price) : null],
     ['Valeur estimée', item.estimated_value != null ? formatEuro(item.estimated_value) : null],
     ['Emplacement', item.storage_location],
-    ['Tags', item.tags],
   ]
+  const tags = splitTags(item.tags)
 
   return (
     <>
@@ -154,7 +157,8 @@ export default function ItemPage() {
         </button>
         <h1>{itemTitle(item)}</h1>
       </header>
-      {justAdded && <Notice>Ajouté à la collection.</Notice>}
+      {justAdded && <p className="success">Ajouté à la collection.</p>}
+      {incremented != null && <p className="success">Exemplaire ajouté : tu en as maintenant {incremented}.</p>}
 
       {item.photos.length > 0 ? (
         <ul className="photo-strip large">
@@ -194,6 +198,17 @@ export default function ItemPage() {
             </div>
           ))}
       </dl>
+      {tags.length > 0 && (
+        <ul className="tag-list item-tags" aria-label="Tags">
+          {tags.map((tag) => (
+            <li key={tag}>
+              <Link className="tag" to={`/?tag=${encodeURIComponent(tag)}`}>
+                {tag}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
       {item.notes && <p className="notes">{item.notes}</p>}
       <p className="muted small">
         Ajouté le {formatDate(item.created_at)}

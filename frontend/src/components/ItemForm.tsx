@@ -1,6 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
 import type { ItemFields, ObjectType } from '../api.ts'
 import { CONDITIONS, OBJECT_TYPES } from '../format.ts'
+import TagInput from './TagInput.tsx'
 import { ErrorMessage } from './ui.tsx'
 
 // Champs du formulaire, tous en texte (valeur des <input>) ; convertis à l'envoi
@@ -167,10 +168,11 @@ export default function ItemForm({ initial, submitLabel, onSubmit, onCancel, hea
           Emplacement
           <input value={state.storage_location} onChange={set('storage_location')} placeholder="ex. album 2, page 4" />
         </label>
-        <label>
-          Tags (séparés par des virgules)
-          <input value={state.tags} onChange={set('tags')} />
-        </label>
+        {/* div et non label : un label activerait la première puce (= la retirer) */}
+        <div className="field">
+          <span className="field-label">Tags</span>
+          <TagInput value={state.tags} onChange={(tags) => setState((s) => ({ ...s, tags }))} />
+        </div>
         <label>
           Notes
           <textarea value={state.notes} onChange={set('notes')} rows={3} />

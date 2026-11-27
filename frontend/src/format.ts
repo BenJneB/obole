@@ -39,3 +39,8 @@ export const formatEuro = (value: number) => euro.format(value)
 export function formatDate(iso: string): string {
   return new Date(iso.endsWith('Z') || iso.includes('+') ? iso : `${iso}Z`).toLocaleDateString('fr-FR')
 }
+
+export function formatDateTime(iso: string): string {
+  // Horodatage local du serveur (sans fuseau) : affiché tel quel
+  return new Date(iso).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })
+}

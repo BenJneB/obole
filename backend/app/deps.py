@@ -26,6 +26,8 @@ class AppState:
     _issuer_index: matching.IssuerIndex | None = None
     _type_ids: dict[str, int] | None = None
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Une seule sauvegarde automatique à la fois (planifiée ou demandée depuis les réglages)
+    backup_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
     def data_dir(self) -> Path:

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import {
   api,
   identify,
@@ -10,11 +10,58 @@ import {
   type ItemFields,
   type Match,
   type ObjectType,
+  type OwnedItem,
 } from '../api.ts'
 import CandidateCard from '../components/CandidateCard.tsx'
 import ItemForm from '../components/ItemForm.tsx'
+import { existingTags } from '../tags.ts'
 import { CameraButton, ErrorMessage, Notice } from '../components/ui.tsx'
-import { OBJECT_TYPES } from '../format.ts'
+import { OBJECT_TYPES, itemTitle } from '../format.ts'
+
+// Mode série : champs repris d'un objet au suivant (même album, même lot, même jour d'achat)
+const CARRIED_OVER = ['storage_location', 'tags', 'acquired_date'] as const
+const SERIES_KEY = 'obole.serie'
+
+function loadSeriesFlag(): boolean {
+  try {
+    return localStorage.getItem(SERIES_KEY) === '1'
+  } catch {
+    return false // stockage indisponible (navigation privée...) : simple valeur par défaut
+  }
+}
+
+function saveSeriesFlag(on: boolean) {
+  try {
+    localStorage.setItem(SERIES_KEY, on ? '1' : '0')
+  } catch {
+    // sans conséquence : le mode série reste actif jusqu'à la fermeture de l'appli
+  }
+}
+
+interface SeriesProgress {
+  count: number
+  last: { id: number; label: string }
+}
+
+/** Objets déjà dans la collection pour ces N# (détection des doublons). */
+function useOwned(numistaIds: number[]): Record<number, OwnedItem[]> {
+  const key = [...new Set(numistaIds)].sort((a, b) => a - b).join(',')
+  const [owned, setOwned] = useState<{ key: string; data: Record<number, OwnedItem[]> }>({ key: '', data: {} })
+  useEffect(() => {
+    if (!key) return
+    let cancelled = false
+    api
+      .owned(key.split(',').map(Number))
+      .then((data) => !cancelled && setOwned({ key, data }))
+      .catch(() => undefined) // information de confort : on ignore une erreur réseau
+    return () => {
+      cancelled = true
+    }
+  }, [key])
+  return owned.key === key ? owned.data : {}
+}
+
+const ownedCount = (items: OwnedItem[] | undefined) => (items ?? []).reduce((n, i) => n + i.quantity, 0)
 
 type Step =
   | { kind: 'photos' }
@@ -31,6 +78,9 @@ export default function AddItem() {
   const [result, setResult] = useState<IdentifyResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const abort = useRef<(() => void) | null>(null)
+  const [series, setSeries] = useState(loadSeriesFlag)
+  const [progress, setProgress] = useState<SeriesProgress | null>(null)
+  const [carried, setCarried] = useState<Partial<ItemFields>>({})
 
   useEffect(() => () => abort.current?.(), []) // quitter la page annule l'envoi en cours
 
@@ -66,6 +116,7 @@ export default function AddItem() {
       currency: e?.currency ?? null,
       year: e?.year ?? null,
       quantity: 1,
+      ...(series ? carried : {}),
     }
     if (candidate) {
       initial.numista_id = candidate.id
@@ -91,7 +142,34 @@ export default function AddItem() {
         if (file) await api.addPhoto(item.id, file, side)
       }
     }
+    if (series) return nextInSeries(item.id, itemTitle(item), fields)
     navigate(`/objet/${item.id}`, { replace: true, state: { added: true } })
+  }
+
+  /** Doublon : +1 exemplaire sur l'objet existant (les nouvelles photos ne sont pas gardées). */
+  async function addCopy(owned: OwnedItem) {
+    const item = await api.incrementItem(owned.id, result?.upload_id ?? null)
+    if (series) return nextInSeries(item.id, `${itemTitle(item)} (×${item.quantity})`, null)
+    navigate(`/objet/${item.id}`, { replace: true, state: { incremented: item.quantity } })
+  }
+
+  function nextInSeries(id: number, label: string, fields: Partial<ItemFields> | null) {
+    if (fields) {
+      setCarried(Object.fromEntries(CARRIED_OVER.map((key) => [key, fields[key] ?? null])))
+      if (fields.tags) existingTags(true) // nouveaux tags proposés dès l'objet suivant
+    }
+    setProgress((p) => ({ count: (p?.count ?? 0) + 1, last: { id, label } }))
+    restart()
+    window.scrollTo(0, 0)
+  }
+
+  function toggleSeries(on: boolean) {
+    setSeries(on)
+    saveSeriesFlag(on)
+    if (!on) {
+      setProgress(null)
+      setCarried({})
+    }
   }
 
   function restart() {
@@ -135,9 +213,12 @@ export default function AddItem() {
         <header className="page-header">
           <h1>Enregistrer</h1>
         </header>
+        {step.initial.numista_id != null && (
+          <Duplicates numistaId={step.initial.numista_id} year={step.initial.year ?? null} onAddCopy={addCopy} />
+        )}
         <ItemForm
           initial={step.initial}
-          submitLabel="Ajouter à la collection"
+          submitLabel={series ? 'Ajouter et passer au suivant' : 'Ajouter à la collection'}
           onSubmit={(fields) => save(fields, candidate)}
           onCancel={() => setStep(result ? { kind: 'results' } : { kind: 'photos' })}
           header={candidate && <CandidateCard candidate={candidate} compact />}
@@ -152,6 +233,12 @@ export default function AddItem() {
         <h1>Ajouter un objet</h1>
         <p className="muted">Photographie l'objet de près, sur un fond uni et bien éclairé.</p>
       </header>
+      {series && progress && (
+        <p className="success" role="status">
+          ✓ <Link to={`/objet/${progress.last.id}`}>{progress.last.label}</Link> enregistré.{' '}
+          {progress.count} objet{progress.count > 1 ? 's' : ''} dans cette série.
+        </p>
+      )}
       <div className="cameras">
         <CameraButton label="Avers" file={obverse} onChange={setObverse} />
         <CameraButton label="Revers (facultatif)" file={reverse} onChange={setReverse} />
@@ -174,6 +261,23 @@ export default function AddItem() {
           Saisie manuelle
         </button>
       </div>
+      <label className="switch">
+        <input type="checkbox" checked={series} onChange={(e) => toggleSeries(e.target.checked)} />
+        <span>
+          <strong>Mode série</strong>
+          <span className="muted small block">
+            Enchaîner plusieurs objets : après chaque ajout, retour ici, avec l'emplacement, les tags et la date
+            d'acquisition repris de l'objet précédent.
+          </span>
+        </span>
+      </label>
+      {series && progress && (
+        <div className="actions">
+          <button className="btn" onClick={() => navigate('/')}>
+            Terminer la série
+          </button>
+        </div>
+      )}
     </>
   )
 }
@@ -245,6 +349,7 @@ function Results({
   const [searching, setSearching] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const candidates = result.match?.candidates ?? []
+  const owned = useOwned(candidates.map((c) => c.id))
 
   const changed =
     extraction &&
@@ -323,7 +428,7 @@ function Results({
           <ul className="candidates">
             {candidates.map((c) => (
               <li key={c.id}>
-                <CandidateCard candidate={c} onChoose={() => onChoose(c)} />
+                <CandidateCard candidate={c} owned={ownedCount(owned[c.id])} onChoose={() => onChoose(c)} />
               </li>
             ))}
           </ul>
@@ -363,6 +468,7 @@ function ManualSearch({
   const [results, setResults] = useState<Candidate[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const owned = useOwned((results ?? []).map((c) => c.id))
 
   async function search(e: FormEvent) {
     e.preventDefault()
@@ -411,7 +517,7 @@ function ManualSearch({
         <ul className="candidates">
           {results.map((c) => (
             <li key={c.id}>
-              <CandidateCard candidate={c} onChoose={() => onChoose(c)} />
+              <CandidateCard candidate={c} owned={ownedCount(owned[c.id])} onChoose={() => onChoose(c)} />
             </li>
           ))}
         </ul>
@@ -425,5 +531,66 @@ function ManualSearch({
         </button>
       </div>
     </>
+  )
+}
+
+/** Même fiche Numista déjà dans la collection : proposer +1 exemplaire plutôt qu'un nouvel objet.
+ *  Une fiche couvre souvent plusieurs années : l'année identique est mise en avant. */
+function Duplicates({
+  numistaId,
+  year,
+  onAddCopy,
+}: {
+  numistaId: number
+  year: number | null
+  onAddCopy: (item: OwnedItem) => Promise<void>
+}) {
+  const items = useOwned([numistaId])[numistaId] ?? []
+  const [busy, setBusy] = useState<number | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  if (!items.length) return null
+
+  async function add(item: OwnedItem) {
+    setBusy(item.id)
+    setError(null)
+    try {
+      await onAddCopy(item)
+    } catch (e) {
+      setError((e as Error).message)
+      setBusy(null)
+    }
+  }
+
+  const sameYear = items.some((i) => year != null && i.year === year)
+  return (
+    <section className="panel duplicates">
+      <h2>Déjà dans ta collection</h2>
+      <p className="muted small">
+        {sameYear
+          ? 'Même fiche et même année : sans doute un exemplaire de plus.'
+          : year == null
+            ? 'Même fiche Numista (une fiche couvre souvent plusieurs années) : vérifie l\'année avant d\'ajouter un exemplaire.'
+            : 'Même fiche Numista, mais pas la même année : vérifie avant d\'ajouter un exemplaire.'}
+      </p>
+      <ul className="owned">
+        {items.map((item) => {
+          const details = [item.year ?? 'année ?', item.mint_mark, item.condition, `×${item.quantity}`]
+          return (
+            <li key={item.id} className={year != null && item.year === year ? 'same' : ''}>
+              {item.thumb_url ? <img src={item.thumb_url} alt="" /> : <div className="no-photo small" aria-hidden>◎</div>}
+              <span className="grow">
+                <Link to={`/objet/${item.id}`}>{item.denomination ?? `Objet ${item.id}`}</Link>
+                <span className="muted small block">{details.filter(Boolean).join(' · ')}</span>
+              </span>
+              <button className="btn small primary" disabled={busy != null} onClick={() => add(item)}>
+                {busy === item.id ? '…' : '+1 exemplaire'}
+              </button>
+            </li>
+          )
+        })}
+      </ul>
+      <ErrorMessage message={error} />
+      <p className="muted small">Ou bien enregistre-le comme un nouvel objet ci-dessous (autre année, autre état…).</p>
+    </section>
   )
 }

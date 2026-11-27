@@ -110,7 +110,41 @@ export interface Stats {
   countries: number
   by_type: Record<string, number>
   by_country: Record<string, number>
+  by_year: Record<string, number>
+  without_year: number
+  by_condition: Record<string, number>
+  by_tag: Record<string, number>
+  identified: number
   estimated_value_total: number
+  acquired_price_total: number
+}
+
+export interface TagCount {
+  tag: string
+  count: number
+}
+
+/** Objet déjà présent pour une fiche Numista (GET /api/items/owned). */
+export interface OwnedItem {
+  id: number
+  year: number | null
+  mint_mark: string | null
+  condition: string | null
+  quantity: number
+  denomination: string | null
+  country: string | null
+  thumb_url: string | null
+}
+
+export interface BackupStatus {
+  enabled: boolean
+  interval_hours: number
+  keep: number
+  directory: string
+  last_run_at: string | null
+  last_status: 'created' | 'unchanged' | 'error' | null
+  last_error: string | null
+  backups: { name: string; created_at: string; size: number }[]
 }
 
 export interface Health {
@@ -185,6 +219,12 @@ export interface ItemQuery {
   country?: string
   object_type?: string
   sort?: string
+  year_min?: string
+  year_max?: string
+  tag?: string
+  condition?: string
+  storage?: string
+  identified?: string
 }
 
 export const api = {
@@ -198,6 +238,14 @@ export const api = {
   createItem: (body: ItemCreate) => request<Item>('/api/items', json('POST', body)),
   updateItem: (id: number, body: Partial<ItemFields>) => request<Item>(`/api/items/${id}`, json('PATCH', body)),
   deleteItem: (id: number) => request<void>(`/api/items/${id}`, { method: 'DELETE' }),
+  incrementItem: (id: number, discardUploadId: string | null) =>
+    request<Item>(`/api/items/${id}/increment`, json('POST', { by: 1, discard_upload_id: discardUploadId })),
+  async owned(numistaIds: number[]): Promise<Record<number, OwnedItem[]>> {
+    const ids = [...new Set(numistaIds)].slice(0, 100)
+    if (!ids.length) return {}
+    return request(`/api/items/owned?numista_ids=${ids.join(',')}`)
+  },
+  tags: () => request<TagCount[]>('/api/tags'),
   addPhoto(itemId: number, file: File, side: PhotoSide): Promise<Photo> {
     const form = new FormData()
     form.append('file', file)
@@ -223,6 +271,8 @@ export const api = {
   },
   stats: () => request<Stats>('/api/stats'),
   health: () => request<Health>('/api/health'),
+  backups: () => request<BackupStatus>('/api/backups'),
+  backupNow: () => request<BackupStatus>('/api/backups', { method: 'POST' }),
 }
 
 function formatYears(min?: number | null, max?: number | null): string {

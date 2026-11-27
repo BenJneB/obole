@@ -11,7 +11,7 @@ from app.db import DB_FILENAME, MIGRATIONS, init_db, make_engine
 from app.factory import create_app
 from app.models import normalize_tags
 
-from .test_api import create, identify
+from .conftest import create, identify
 
 # --- tags ------------------------------------------------------------------------------------------
 
@@ -178,7 +178,7 @@ def test_scheduler_backs_up_at_startup(settings, fake_numista, fake_ollama, tmp_
     try:
         with TestClient(app) as client:
             deadline = time.time() + 10
-            while not list((tmp_path / "auto").glob("obole-auto-*.zip")) and time.time() < deadline:
+            while not list((tmp_path / "auto").glob(f"{backup.AUTO_PREFIX}*.zip")) and time.time() < deadline:
                 time.sleep(0.05)
             status = client.get("/api/backups").json()
             assert status["enabled"] is True
@@ -198,3 +198,43 @@ def test_backup_now_endpoint(client, settings):
     assert status["last_status"] == "created"
     assert len(status["backups"]) == 1
     assert status["backups"][0]["size"] > 0
+
+
+# --- simplifications ---------------------------------------------------------------------------
+
+
+def test_accented_filters_ignore_case(client):
+    egypt = create(client, country="Égypte", tags="Été, rare")
+    create(client, country="France")
+    for params in ({"country": "égypte"}, {"tag": "été"}, {"q": "ÉGYP"}):
+        assert [i["id"] for i in client.get("/api/items", params=params).json()["items"]] == [egypt["id"]]
+    create(client, country="égypte")
+    assert client.get("/api/stats").json()["countries"] == 2
+
+
+def test_changing_numista_id_clears_title_and_recomputes_url(client):
+    item = create(client, numista_id=1001, numista_title="2 Euro (Arbre)", numista_url="https://ailleurs")
+    assert item["numista_url"] == "https://fr.numista.com/1001"  # toujours déduite du N#
+    updated = client.patch(f"/api/items/{item['id']}", json={"numista_id": 1002}).json()
+    assert updated["numista_title"] is None
+    assert updated["numista_url"] == "https://fr.numista.com/1002"
+    same = client.patch(f"/api/items/{updated['id']}", json={"numista_id": 1002, "notes": "x"}).json()
+    assert same["numista_title"] is None and same["notes"] == "x"
+    kept = client.patch(f"/api/items/{item['id']}", json={"numista_id": 1001, "numista_title": "T"}).json()
+    assert kept["numista_title"] == "T"
+    cleared = client.patch(f"/api/items/{item['id']}", json={"numista_id": None}).json()
+    assert cleared["numista_url"] is None and cleared["numista_title"] is None
+
+
+def test_item_thumb_prefers_obverse(client, jpeg):
+    item = create(client)
+    assert item["thumb_url"] is None
+    other = client.post(f"/api/items/{item['id']}/photos", files={"file": ("a.jpg", jpeg, "image/jpeg")},
+                        data={"side": "other"}).json()
+    front = client.post(f"/api/items/{item['id']}/photos", files={"file": ("b.jpg", jpeg, "image/jpeg")},
+                        data={"side": "obverse"}).json()
+    assert other["id"] < front["id"]
+    assert client.get(f"/api/items/{item['id']}").json()["thumb_url"] == front["thumb_url"]
+    bad = client.post(f"/api/items/{item['id']}/photos",
+                      files={"file": ("c.jpg", b"pas une image", "image/jpeg")})
+    assert bad.status_code == 400  # PhotoError convertie par le gestionnaire global

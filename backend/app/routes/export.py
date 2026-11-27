@@ -5,6 +5,7 @@ import csv
 import io
 import json
 import os
+import sqlite3
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -17,7 +18,8 @@ from starlette.background import BackgroundTask
 
 from .. import backup
 from ..deps import AppState, SessionDep, StateDep
-from ..models import Item, Photo
+from ..models import Item
+from .items import photos_by_item
 
 router = APIRouter(tags=["export"])
 
@@ -25,14 +27,12 @@ CSV_FIELDS = [name for name in Item.model_fields if name != "ai_raw_json"] + ["p
 
 
 def _rows(session: Session) -> list[dict]:
-    photos: dict[int, list[str]] = {}
-    for photo in session.exec(select(Photo).order_by(col(Photo.id))):
-        photos.setdefault(photo.item_id, []).append(photo.path)
+    photos = photos_by_item(session)
     rows = []
     for item in session.exec(select(Item).order_by(col(Item.id))):
         row = item.model_dump(mode="json")
         row["ai_extraction"] = json.loads(row.pop("ai_raw_json")) if item.ai_raw_json else None
-        row["photos"] = photos.get(item.id, [])
+        row["photos"] = [photo.path for photo in photos.get(item.id, [])]
         rows.append(row)
     return rows
 
@@ -140,7 +140,7 @@ async def backup_now(state: StateDep) -> BackupStatus:
                 backup.run_auto_backup, state.data_dir, settings.backup_path, state.engine,
                 settings.backup_keep, True,
             )
-        except OSError as exc:
+        except (OSError, sqlite3.Error) as exc:
             backup.record_error(settings.backup_path, str(exc))
             raise HTTPException(500, f"Sauvegarde impossible : {exc}") from exc
     return backup_status(state)

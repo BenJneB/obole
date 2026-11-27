@@ -1,10 +1,11 @@
 """Client du modèle vision local (Ollama) : préparation des images, prompt et sortie structurée."""
 
+import asyncio
 import base64
 import io
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
@@ -72,6 +73,9 @@ SIDES_ONE = "Only one image is provided (it may show one side, or both sides nex
 def prepare_image(path: Path) -> str:
     """Redresse (EXIF), convertit en RGB, réduit à MAX_SIDE px et renvoie le JPEG en base64."""
     with Image.open(path) as img:
+        # Réduire d'abord : thumbnail() ne décode qu'une fraction du JPEG (draft), alors que
+        # exif_transpose() forcerait le décodage complet. Cadre carré : même taille finale.
+        img.thumbnail((MAX_SIDE, MAX_SIDE))
         img = ImageOps.exif_transpose(img)
         if img.mode in ("RGBA", "LA", "P"):
             img = img.convert("RGBA")
@@ -79,7 +83,6 @@ def prepare_image(path: Path) -> str:
             background.paste(img, mask=img.getchannel("A"))
             img = background
         img = img.convert("RGB")
-        img.thumbnail((MAX_SIDE, MAX_SIDE))
         buffer = io.BytesIO()
         img.save(buffer, "JPEG", quality=90)
     return base64.b64encode(buffer.getvalue()).decode("ascii")
@@ -93,7 +96,6 @@ class VisionResult:
     prompt_tokens: int | None = None  # tokens d'entrée (images comprises) : à comparer à num_ctx
     output_tokens: int | None = None
     load_seconds: float | None = None  # temps de chargement du modèle (0 s'il était déjà en mémoire)
-    raw: dict = field(default_factory=dict)
 
 
 class VisionError(RuntimeError):
@@ -145,7 +147,7 @@ async def identify(
                 "content": PROMPT.format(
                     sides=SIDES_TWO if len(images) == 2 else SIDES_ONE, max_inscriptions=MAX_INSCRIPTIONS
                 ),
-                "images": [prepare_image(p) for p in images],
+                "images": await asyncio.gather(*(asyncio.to_thread(prepare_image, p) for p in images)),
             }
         ],
         "format": EXTRACTION_SCHEMA,
@@ -165,7 +167,10 @@ async def identify(
     elapsed = time.perf_counter() - start
     if response.status_code != 200:
         raise VisionError(f"Ollama a répondu {response.status_code} : {response.text[:300]}")
-    data = response.json()
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise VisionError(f"Réponse d'Ollama illisible : {response.text[:300]}") from exc
     content = data.get("message", {}).get("content", "")
     if data.get("done_reason") == "length":
         raise VisionError(
@@ -183,5 +188,4 @@ async def identify(
         prompt_tokens=data.get("prompt_eval_count"),
         output_tokens=data.get("eval_count"),
         load_seconds=(data.get("load_duration") or 0) / 1e9,
-        raw={k: v for k, v in data.items() if k != "message"},
     )

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type BackupStatus, type Health, type Stats } from '../api.ts'
 import { ErrorMessage } from '../components/ui.tsx'
-import { formatDateTime } from '../format.ts'
+import { formatDateTime, plural } from '../format.ts'
 
 function formatSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} Ko`
@@ -66,7 +66,7 @@ function BackupPanel() {
       {last ? (
         <p className="small">
           Dernière sauvegarde : {formatDateTime(last.created_at)} ({formatSize(last.size)}) ·{' '}
-          {status.backups.length} conservée{status.backups.length > 1 ? 's' : ''}
+          {plural(status.backups.length, 'conservée')}
         </p>
       ) : (
         status && <p className="muted small">Aucune sauvegarde automatique pour l'instant.</p>
@@ -162,8 +162,7 @@ export default function Settings() {
         <section className="panel">
           <h2>Collection</h2>
           <p>
-            {stats.items} objet{stats.items > 1 ? 's' : ''}, {stats.total_quantity} exemplaire
-            {stats.total_quantity > 1 ? 's' : ''}, {stats.countries} pays ·{' '}
+            {plural(stats.items, 'objet')}, {plural(stats.total_quantity, 'exemplaire')}, {stats.countries} pays ·{' '}
             <Link to="/stats">Statistiques détaillées</Link>
           </p>
         </section>

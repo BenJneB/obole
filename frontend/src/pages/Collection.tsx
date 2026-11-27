@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { api, type ItemList, type Stats, type TagCount } from '../api.ts'
-import { existingTags } from '../tags.ts'
+import { api, type ItemList, type Stats } from '../api.ts'
 import { ErrorMessage } from '../components/ui.tsx'
-import { CONDITIONS, OBJECT_TYPES, itemTitle, mainThumb } from '../format.ts'
+import { CONDITIONS, OBJECT_TYPES, itemTitle, plural } from '../format.ts'
 
 const SORTS = [
   { value: '-created_at', label: 'Ajouts récents' },
@@ -26,6 +25,32 @@ const ADVANCED = {
 } as const
 type AdvancedKey = keyof typeof ADVANCED
 
+/** Paramètres de GET /api/items déduits de l'URL de la page. */
+function apiQuery(params: URLSearchParams): string {
+  const query = new URLSearchParams()
+  const set = (key: string, value: string | null) => value?.trim() && query.set(key, value.trim())
+  set('q', params.get('q'))
+  set('country', params.get('pays'))
+  set('object_type', params.get('type'))
+  set('sort', params.get('tri'))
+  for (const [key, apiKey] of Object.entries(ADVANCED)) {
+    const value = params.get(key) ?? ''
+    if (key.startsWith('annee') && !/^-?\d+$/.test(value)) continue // vide ou en cours de saisie
+    set(apiKey, key === 'numista' && value ? String(value === 'oui') : value)
+  }
+  return query.toString()
+}
+
+/** Valeur qui ne suit `value` qu'après `delay` ms sans changement (frappe au clavier). */
+function useDebounced<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delay)
+    return () => clearTimeout(timer)
+  }, [value, delay])
+  return debounced
+}
+
 export default function Collection() {
   // Les filtres vivent dans l'URL : retour arrière depuis une fiche = mêmes filtres
   const [params, setParams] = useSearchParams()
@@ -37,14 +62,12 @@ export default function Collection() {
     (Object.keys(ADVANCED) as AdvancedKey[]).map((key) => [key, params.get(key) ?? '']),
   ) as Record<AdvancedKey, string>
   const advancedCount = Object.values(advanced).filter(Boolean).length
-  // Clé stable pour l'effet de chargement (l'objet `advanced` change à chaque rendu)
-  const advancedKey = JSON.stringify(advanced)
+  // Une requête par pause de frappe, pas par touche (recherche, années, emplacement)
+  const query = useDebounced(apiQuery(params), 300)
 
-  const [search, setSearch] = useState(q)
   const [list, setList] = useState<ItemList | null>(null)
   const [stats, setStats] = useState<Stats | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [tags, setTags] = useState<TagCount[]>([])
   const [showFilters, setShowFilters] = useState(advancedCount > 0)
 
   function setParam(key: string, value: string) {
@@ -59,35 +82,23 @@ export default function Collection() {
     )
   }
 
-  // Recherche texte : attendre une courte pause de frappe avant d'interroger le serveur
   useEffect(() => {
-    const timer = setTimeout(() => {
-      if (search !== q) setParam('q', search.trim())
-    }, 300)
-    return () => clearTimeout(timer)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search])
-
-  useEffect(() => {
-    let cancelled = false
-    const extra: Record<string, string> = {}
-    for (const [key, value] of Object.entries(JSON.parse(advancedKey) as Record<AdvancedKey, string>)) {
-      if (!value || (key.startsWith('annee') && !/^-?\d+$/.test(value))) continue // année en cours de saisie
-      extra[ADVANCED[key as AdvancedKey]] = key === 'numista' ? String(value === 'oui') : value
-    }
+    // Requête périmée (filtre changé entre-temps) : annulée, le serveur arrête d'envoyer
+    const controller = new AbortController()
     api
-      .listItems({ q, country, object_type: objectType, sort, ...extra })
-      .then((data) => !cancelled && (setList(data), setError(null)))
-      .catch((e: Error) => !cancelled && setError(e.message))
-    return () => {
-      cancelled = true
-    }
-  }, [q, country, objectType, sort, advancedKey])
+      .listItems(query, controller.signal)
+      .then((data) => (setList(data), setError(null)))
+      .catch((e: Error) => !controller.signal.aborted && setError(e.message))
+    return () => controller.abort()
+  }, [query])
 
   useEffect(() => {
+    // Les stats donnent aussi les pays et les tags des listes de filtres
     api.stats().then(setStats).catch(() => setStats(null))
-    existingTags(true).then(setTags)
   }, [])
+  const tags = Object.entries(stats?.by_tag ?? {})
+    .map(([tag, count]) => ({ tag, count }))
+    .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag, 'fr'))
 
   function clearAdvanced() {
     setParams(
@@ -108,8 +119,7 @@ export default function Collection() {
         <h1>Ma collection</h1>
         {stats && (
           <p className="muted">
-            {stats.items} objet{stats.items > 1 ? 's' : ''} · {stats.total_quantity} exemplaire
-            {stats.total_quantity > 1 ? 's' : ''} · {stats.countries} pays
+            {plural(stats.items, 'objet')} · {plural(stats.total_quantity, 'exemplaire')} · {stats.countries} pays
           </p>
         )}
       </header>
@@ -118,8 +128,8 @@ export default function Collection() {
         <input
           type="search"
           placeholder="Rechercher (pays, valeur, notes…)"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          value={q}
+          onChange={(e) => setParam('q', e.target.value)}
           enterKeyHint="search"
         />
         <div className="chips">
@@ -255,10 +265,15 @@ export default function Collection() {
 
       {list && list.items.length > 0 && (
         <>
-          {filtered && <p className="muted small">{list.total} résultat{list.total > 1 ? 's' : ''}</p>}
+          {filtered && <p className="muted small">{plural(list.total, 'résultat')}</p>}
+          {list.total > list.items.length && (
+            <p className="muted small">
+              {list.items.length} premiers affichés sur {list.total} : affiner la recherche ou les filtres.
+            </p>
+          )}
           <ul className="grid">
             {list.items.map((item) => {
-              const thumb = mainThumb(item)
+              const thumb = item.thumb_url
               return (
                 <li key={item.id}>
                   <Link to={`/objet/${item.id}`} className="card">

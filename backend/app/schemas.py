@@ -3,7 +3,7 @@
 import json
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlmodel import SQLModel
 
 from .models import Item, ItemFields, Photo, PhotoSide
@@ -25,6 +25,12 @@ class PhotoRead(BaseModel):
         )
 
 
+def thumb_url(photos: list[Photo]) -> str | None:
+    """Miniature principale d'un objet : l'avers de préférence, sinon la première photo."""
+    main = next((p for p in photos if p.side == PhotoSide.obverse), photos[0] if photos else None)
+    return PhotoRead.of(main).thumb_url if main else None
+
+
 class ItemCreate(ItemFields):
     # Photos d'une identification (/api/identify) à rattacher à l'objet
     upload_id: str | None = None
@@ -38,6 +44,7 @@ class ItemRead(ItemFields):
     updated_at: datetime
     ai_extraction: dict | None = None
     photos: list[PhotoRead] = []
+    thumb_url: str | None = None  # miniature principale (grille, doublons)
 
     @classmethod
     def of(cls, item: Item, photos: list[Photo]) -> "ItemRead":
@@ -45,6 +52,7 @@ class ItemRead(ItemFields):
             **item.model_dump(exclude={"ai_raw_json"}),
             ai_extraction=json.loads(item.ai_raw_json) if item.ai_raw_json else None,
             photos=[PhotoRead.of(p) for p in photos],
+            thumb_url=thumb_url(photos),
         )
 
 
@@ -54,6 +62,9 @@ class ItemList(BaseModel):
 
 
 class CandidateRead(BaseModel):
+    # Construit directement depuis matching.Candidate (url et years sont des propriétés)
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     title: str
     issuer: str | None
@@ -64,6 +75,8 @@ class CandidateRead(BaseModel):
 
 
 class MatchRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     issuer_code: str | None
     issuer_name: str | None
     issuer_score: float

@@ -1,6 +1,6 @@
 import { useState, type FormEvent, type ReactNode } from 'react'
 import type { ItemFields, ObjectType } from '../api.ts'
-import { CONDITIONS, OBJECT_TYPES } from '../format.ts'
+import { CONDITIONS, OBJECT_TYPES, isKnownCondition } from '../format.ts'
 import TagInput from './TagInput.tsx'
 import { ErrorMessage } from './ui.tsx'
 
@@ -127,7 +127,7 @@ export default function ItemForm({ initial, submitLabel, onSubmit, onCancel, hea
                 {c.label}
               </option>
             ))}
-            {state.condition && !CONDITIONS.some((c) => c.value === state.condition) && (
+            {state.condition && !isKnownCondition(state.condition) && (
               <option value={state.condition}>{state.condition}</option>
             )}
           </select>

@@ -8,12 +8,12 @@ Exemple : `conn.exec_driver_sql("ALTER TABLE items ADD COLUMN weight REAL")`.
 
 import json
 import logging
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import Connection, Engine, event
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import SQLModel, create_engine
 
 from . import models  # noqa: F401  (enregistre les tables dans SQLModel.metadata)
 
@@ -35,6 +35,11 @@ def make_engine(data_dir: Path) -> Engine:
         cursor.execute("PRAGMA foreign_keys = ON")
         cursor.execute("PRAGMA journal_mode = WAL")  # lectures pendant une écriture
         cursor.close()
+        # lower() de SQLite ne connaît que l'ASCII (« É » reste « É ») : remplacé par celui de Python,
+        # pour que toutes les comparaisons sans casse (filtres, ilike, stats) gèrent les accents
+        dbapi_conn.create_function(
+            "lower", 1, lambda v: v.lower() if isinstance(v, str) else v, deterministic=True
+        )
 
     return engine
 
@@ -113,8 +118,3 @@ def cache_key(path: str, params: dict) -> str:
     """Clé de cache Numista : chemin + paramètres non nuls triés."""
     clean = {k: v for k, v in params.items() if v is not None}
     return path + "?" + json.dumps(clean, sort_keys=True, ensure_ascii=False)
-
-
-def session_scope(engine: Engine) -> Iterator[Session]:
-    with Session(engine) as session:
-        yield session

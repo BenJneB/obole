@@ -9,23 +9,7 @@ from sqlmodel import Session
 
 from app.db import DB_FILENAME, MIGRATIONS, init_db
 
-from .conftest import EXTRACTION, make_image
-
-
-def identify(client, jpeg, reverse=True):
-    files = {"obverse": ("avers.jpg", jpeg, "image/jpeg")}
-    if reverse:
-        files["reverse"] = ("revers.jpg", make_image((10, 20, 30)), "image/jpeg")
-    response = client.post("/api/identify", files=files)
-    assert response.status_code == 200, response.text
-    return response.json()
-
-
-def create(client, **fields):
-    response = client.post("/api/items", json={"country": "France", "denomination": "2 euro", **fields})
-    assert response.status_code == 201, response.text
-    return response.json()
-
+from .conftest import EXTRACTION, create, identify, make_image
 
 # --- identification ------------------------------------------------------------------------------
 
@@ -201,7 +185,10 @@ def test_numista_search_and_detail(client, fake_numista):
     response = client.get("/api/numista/search", params={"q": "2 euro", "issuer": "france",
                                                          "object_type": "banknote"})
     assert response.status_code == 200
-    assert response.json()["count"] == 2
+    candidates = response.json()
+    assert [c["id"] for c in candidates] == [1001, 1002]
+    assert candidates[0]["years"] == "2001-2024"
+    assert candidates[0]["url"] == "https://fr.numista.com/1001"
     search = fake_numista.requests[-1]
     assert search.url.params["object_type"] == "18"
     assert search.url.params["lang"] == "fr"

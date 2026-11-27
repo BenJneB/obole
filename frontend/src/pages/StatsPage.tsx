@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, type Stats } from '../api.ts'
 import { ErrorMessage } from '../components/ui.tsx'
-import { CONDITIONS, OBJECT_TYPES, formatEuro } from '../format.ts'
+import { CONDITIONS, OBJECT_TYPES, formatEuro, isKnownCondition, plural } from '../format.ts'
 
 interface Bar {
   label: string
@@ -12,12 +12,12 @@ interface Bar {
 }
 
 /** Barres horizontales (une seule série : une seule couleur, valeur écrite à côté). */
-function BarList({ bars, unit = 'objet' }: { bars: Bar[]; unit?: string }) {
+function BarList({ bars }: { bars: Bar[] }) {
   const max = Math.max(1, ...bars.map((b) => b.value))
   return (
     <ul className="bars">
       {bars.map((bar) => {
-        const title = `${bar.label} : ${bar.value} ${unit}${bar.value > 1 ? 's' : ''}`
+        const title = `${bar.label} : ${plural(bar.value, 'objet')}`
         const content = (
           <>
             <span className="bar-label">{bar.label}</span>
@@ -134,7 +134,7 @@ export default function StatsPage() {
     })),
     // États saisis à la main hors de l'échelle
     ...Object.entries(stats.by_condition)
-      .filter(([value]) => value && !CONDITIONS.some((c) => c.value === value))
+      .filter(([value]) => value && !isKnownCondition(value))
       .map(([value, count]) => ({ label: value, value: count, to: q({ etat: value }) })),
   ]
   const noCondition = stats.by_condition[''] ?? 0
@@ -185,7 +185,7 @@ export default function StatsPage() {
       {stats.identified < stats.items && (
         <p className="small">
           <Link to={q({ numista: 'non' })}>
-            {stats.items - stats.identified} objet{stats.items - stats.identified > 1 ? 's' : ''} sans fiche Numista
+            {plural(stats.items - stats.identified, 'objet')} sans fiche Numista
           </Link>
         </p>
       )}
@@ -227,7 +227,7 @@ export default function StatsPage() {
         {byPeriod.length > 0 ? <BarList bars={byPeriod} /> : <p className="muted small">Aucune année saisie.</p>}
         {stats.without_year > 0 && (
           <p className="muted small">
-            + {stats.without_year} objet{stats.without_year > 1 ? 's' : ''} sans année
+            + {plural(stats.without_year, 'objet')} sans année
           </p>
         )}
       </section>
@@ -239,7 +239,7 @@ export default function StatsPage() {
           {noCondition > 0 && (
             <p className="small">
               <Link to={q({ etat: 'none' })}>
-                + {noCondition} objet{noCondition > 1 ? 's' : ''} sans état précisé
+                + {plural(noCondition, 'objet')} sans état précisé
               </Link>
             </p>
           )}

@@ -16,7 +16,7 @@ import CandidateCard from '../components/CandidateCard.tsx'
 import ItemForm from '../components/ItemForm.tsx'
 import { existingTags } from '../tags.ts'
 import { CameraButton, ErrorMessage, Notice } from '../components/ui.tsx'
-import { OBJECT_TYPES, itemTitle } from '../format.ts'
+import { OBJECT_TYPES, itemTitle, plural } from '../format.ts'
 
 // Mode série : champs repris d'un objet au suivant (même album, même lot, même jour d'achat)
 const CARRIED_OVER = ['storage_location', 'tags', 'acquired_date'] as const
@@ -61,7 +61,32 @@ function useOwned(numistaIds: number[]): Record<number, OwnedItem[]> {
   return owned.key === key ? owned.data : {}
 }
 
-const ownedCount = (items: OwnedItem[] | undefined) => (items ?? []).reduce((n, i) => n + i.quantity, 0)
+/** Liste de fiches Numista, chacune marquée si elle est déjà dans la collection. */
+function CandidateList({ candidates, onChoose }: { candidates: Candidate[]; onChoose: (c: Candidate) => void }) {
+  const owned = useOwned(candidates.map((c) => c.id))
+  return (
+    <ul className="candidates">
+      {candidates.map((c) => (
+        <li key={c.id}>
+          <CandidateCard
+            candidate={c}
+            owned={(owned[c.id] ?? []).reduce((n, i) => n + i.quantity, 0)}
+            onChoose={() => onChoose(c)}
+          />
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/** Champs corrigeables de la lecture de l'IA, en texte (valeurs des <input>). */
+function draftOf(extraction: Extraction | null) {
+  return {
+    country: extraction?.country ?? '',
+    denomination_text: extraction?.denomination_text ?? '',
+    year: extraction?.year != null ? String(extraction.year) : '',
+  }
+}
 
 type Step =
   | { kind: 'photos' }
@@ -136,14 +161,26 @@ export default function AddItem() {
       upload_id: result?.upload_id ?? null,
       ai_extraction: result?.extraction ?? null,
     })
-    // Saisie manuelle sans identification : les photos n'ont pas encore été envoyées
+    // Saisie manuelle sans identification : les photos n'ont pas encore été envoyées.
+    // L'objet existe déjà : un échec ici ne doit pas remonter au formulaire (le renvoyer
+    // créerait un doublon) ; on le signale et la photo pourra être ajoutée depuis la fiche.
+    let photoError: string | null = null
     if (!result) {
       for (const [file, side] of [[obverse, 'obverse'], [reverse, 'reverse']] as const) {
-        if (file) await api.addPhoto(item.id, file, side)
+        if (!file) continue
+        try {
+          await api.addPhoto(item.id, file, side)
+        } catch (e) {
+          photoError = `Objet enregistré, mais photo non ajoutée : ${(e as Error).message}`
+        }
       }
     }
-    if (series) return nextInSeries(item.id, itemTitle(item), fields)
-    navigate(`/objet/${item.id}`, { replace: true, state: { added: true } })
+    if (series) {
+      nextInSeries(item.id, itemTitle(item), fields)
+      if (photoError) setError(photoError)
+      return
+    }
+    navigate(`/objet/${item.id}`, { replace: true, state: { added: true, photoError } })
   }
 
   /** Doublon : +1 exemplaire sur l'objet existant (les nouvelles photos ne sont pas gardées). */
@@ -233,10 +270,10 @@ export default function AddItem() {
         <h1>Ajouter un objet</h1>
         <p className="muted">Photographie l'objet de près, sur un fond uni et bien éclairé.</p>
       </header>
-      {series && progress && (
+      {progress && (
         <p className="success" role="status">
           ✓ <Link to={`/objet/${progress.last.id}`}>{progress.last.label}</Link> enregistré.{' '}
-          {progress.count} objet{progress.count > 1 ? 's' : ''} dans cette série.
+          {plural(progress.count, 'objet')} dans cette série.
         </p>
       )}
       <div className="cameras">
@@ -271,7 +308,7 @@ export default function AddItem() {
           </span>
         </span>
       </label>
-      {series && progress && (
+      {progress && (
         <div className="actions">
           <button className="btn" onClick={() => navigate('/')}>
             Terminer la série
@@ -341,21 +378,12 @@ function Results({
   onRestart: () => void
 }) {
   const extraction = result.extraction
-  const [draft, setDraft] = useState(() => ({
-    country: extraction?.country ?? '',
-    denomination_text: extraction?.denomination_text ?? '',
-    year: extraction?.year != null ? String(extraction.year) : '',
-  }))
+  const initialDraft = draftOf(extraction)
+  const [draft, setDraft] = useState(initialDraft)
   const [searching, setSearching] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const candidates = result.match?.candidates ?? []
-  const owned = useOwned(candidates.map((c) => c.id))
-
-  const changed =
-    extraction &&
-    (draft.country !== (extraction.country ?? '') ||
-      draft.denomination_text !== (extraction.denomination_text ?? '') ||
-      draft.year !== (extraction.year != null ? String(extraction.year) : ''))
+  const changed = extraction && EDITABLE.some(({ key }) => draft[key] !== initialDraft[key])
 
   async function researchWithCorrection() {
     if (!extraction) return
@@ -425,13 +453,7 @@ function Results({
       {candidates.length > 0 && (
         <section>
           <h2>Fiches Numista proposées</h2>
-          <ul className="candidates">
-            {candidates.map((c) => (
-              <li key={c.id}>
-                <CandidateCard candidate={c} owned={ownedCount(owned[c.id])} onChoose={() => onChoose(c)} />
-              </li>
-            ))}
-          </ul>
+          <CandidateList candidates={candidates} onChoose={onChoose} />
         </section>
       )}
 
@@ -468,7 +490,6 @@ function ManualSearch({
   const [results, setResults] = useState<Candidate[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const owned = useOwned((results ?? []).map((c) => c.id))
 
   async function search(e: FormEvent) {
     e.preventDefault()
@@ -514,13 +535,7 @@ function ManualSearch({
       <ErrorMessage message={error} />
       {results && results.length === 0 && <p className="empty">Aucun résultat.</p>}
       {results && results.length > 0 && (
-        <ul className="candidates">
-          {results.map((c) => (
-            <li key={c.id}>
-              <CandidateCard candidate={c} owned={ownedCount(owned[c.id])} onChoose={() => onChoose(c)} />
-            </li>
-          ))}
-        </ul>
+        <CandidateList candidates={results} onChoose={onChoose} />
       )}
       <div className="actions vertical">
         <button className="btn" onClick={onFreeEntry}>

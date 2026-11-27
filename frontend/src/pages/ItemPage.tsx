@@ -4,7 +4,7 @@ import { api, type Item, type PhotoSide } from '../api.ts'
 import ItemForm from '../components/ItemForm.tsx'
 import { splitTags } from '../tags.ts'
 import { ConfirmButton, ErrorMessage } from '../components/ui.tsx'
-import { CONDITIONS, formatDate, formatEuro, itemTitle, typeLabel } from '../format.ts'
+import { conditionLabel, formatDate, formatEuro, itemTitle, typeLabel } from '../format.ts'
 
 const SIDE_LABELS: Record<PhotoSide, string> = { obverse: 'Avers', reverse: 'Revers', other: 'Photo' }
 
@@ -13,7 +13,7 @@ export default function ItemPage() {
   const itemId = Number(id)
   const navigate = useNavigate()
   const location = useLocation()
-  const navState = location.state as { added?: boolean; incremented?: number } | null
+  const navState = location.state as { added?: boolean; incremented?: number; photoError?: string | null } | null
   const justAdded = Boolean(navState?.added)
   const incremented = navState?.incremented
   const [item, setItem] = useState<Item | null>(null)
@@ -53,8 +53,8 @@ export default function ItemPage() {
     setBusy(true)
     setError(null)
     try {
-      await api.addPhoto(item.id, file, side)
-      setItem(await api.getItem(item.id))
+      const photo = await api.addPhoto(item.id, file, side)
+      setItem({ ...item, photos: [...item.photos, photo], thumb_url: item.thumb_url ?? photo.thumb_url })
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -93,12 +93,8 @@ export default function ItemPage() {
           submitLabel="Enregistrer"
           onCancel={() => setEditing(false)}
           onSubmit={async (fields) => {
-            const changedNumista = fields.numista_id !== item.numista_id
-            const updated = await api.updateItem(item.id, {
-              ...fields,
-              // Nouveau N# saisi à la main : l'ancien titre Numista ne correspond plus
-              ...(changedNumista ? { numista_title: null } : {}),
-            })
+            // Nouveau N# : le serveur efface lui-même l'ancien titre et recalcule l'URL
+            const updated = await api.updateItem(item.id, fields)
             setItem(updated)
             setEditing(false)
           }}
@@ -127,7 +123,7 @@ export default function ItemPage() {
     )
   }
 
-  const condition = CONDITIONS.find((c) => c.value === item.condition)?.label ?? item.condition
+  const condition = conditionLabel(item.condition)
   const rows: [string, string | null][] = [
     ['Type', typeLabel(item.object_type)],
     ['Pays', item.country],
@@ -158,6 +154,7 @@ export default function ItemPage() {
         <h1>{itemTitle(item)}</h1>
       </header>
       {justAdded && <p className="success">Ajouté à la collection.</p>}
+      <ErrorMessage message={navState?.photoError} />
       {incremented != null && <p className="success">Exemplaire ajouté : tu en as maintenant {incremented}.</p>}
 
       {item.photos.length > 0 ? (
@@ -181,7 +178,7 @@ export default function ItemPage() {
           <p>
             {item.numista_title && <strong>{item.numista_title}</strong>}
             <br />
-            <a href={item.numista_url ?? `https://fr.numista.com/${item.numista_id}`} target="_blank" rel="noreferrer">
+            <a href={item.numista_url ?? undefined} target="_blank" rel="noreferrer">
               Fiche N# {item.numista_id} sur Numista ↗
             </a>
           </p>

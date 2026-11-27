@@ -1,4 +1,4 @@
-import type { Item, ItemFields, ObjectType } from './api'
+import type { ItemFields, ObjectType } from './api'
 
 export const OBJECT_TYPES: { value: ObjectType; label: string; plural: string }[] = [
   { value: 'coin', label: 'Pièce', plural: 'Pièces' },
@@ -28,15 +28,15 @@ export function itemTitle(item: Pick<ItemFields, 'denomination' | 'year' | 'numi
   return item.numista_title ?? 'Objet sans nom'
 }
 
-export function mainThumb(item: Item): string | null {
-  const photo = item.photos.find((p) => p.side === 'obverse') ?? item.photos[0]
-  return photo?.thumb_url ?? null
-}
 
 const euro = new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' })
 export const formatEuro = (value: number) => euro.format(value)
 
 export function formatDate(iso: string): string {
+  // Date seule (acquired_date) : « 2026-11-27Z » est invalide hors Chrome, et minuit UTC
+  // décalerait d'un jour à l'ouest de Greenwich ; on la lit comme une date locale
+  const day = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso)
+  if (day) return new Date(Number(day[1]), Number(day[2]) - 1, Number(day[3])).toLocaleDateString('fr-FR')
   return new Date(iso.endsWith('Z') || iso.includes('+') ? iso : `${iso}Z`).toLocaleDateString('fr-FR')
 }
 
@@ -44,3 +44,15 @@ export function formatDateTime(iso: string): string {
   // Horodatage local du serveur (sans fuseau) : affiché tel quel
   return new Date(iso).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })
 }
+
+/** « 1 objet », « 3 objets » (pluriel régulier en -s). */
+export function plural(count: number, word: string): string {
+  return `${count} ${word}${count > 1 ? 's' : ''}`
+}
+
+/** Libellé d'un état de conservation (« TTB : Très très beau »), ou la valeur saisie telle quelle. */
+export function conditionLabel(value: string | null): string | null {
+  return CONDITIONS.find((c) => c.value === value)?.label ?? value
+}
+
+export const isKnownCondition = (value: string) => CONDITIONS.some((c) => c.value === value)

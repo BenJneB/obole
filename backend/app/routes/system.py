@@ -50,7 +50,8 @@ def stats(session: SessionDep) -> Stats:
         select(
             func.count(Item.id),
             func.coalesce(func.sum(Item.quantity), 0),
-            func.count(func.distinct(func.lower(Item.country))),
+            # "" exclu, comme dans by_country
+            func.count(func.distinct(func.nullif(func.lower(Item.country), ""))),
             func.coalesce(func.sum(Item.estimated_value * Item.quantity), 0.0),
             func.coalesce(func.sum(Item.acquired_price), 0.0),
             func.count(Item.numista_id),
@@ -73,9 +74,7 @@ def stats(session: SessionDep) -> Stats:
         select(func.coalesce(Item.condition, ""), func.count(Item.id))
         .group_by(func.coalesce(Item.condition, ""))
     ).all())
-    by_tag: dict[str, int] = {}
-    for tag in list_tags(session):
-        by_tag[tag.tag] = tag.count
+    by_tag = {t.tag: t.count for t in list_tags(session)}
     return Stats(
         items=count, total_quantity=quantity, countries=countries,
         by_type={str(k): v for k, v in by_type.items()}, by_country=dict(by_country),

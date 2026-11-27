@@ -659,8 +659,7 @@ summary {
 }
 
 /* --- réglages ------------------------------------------------------------------------------------- */
-.status,
-.plain {
+.status {
   list-style: none;
   padding: 0;
   margin: 0 0 12px;

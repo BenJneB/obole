@@ -6,7 +6,8 @@ import logging
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from . import backup, storage
 from .config import Settings, get_settings
@@ -14,7 +15,7 @@ from .db import init_db, make_engine
 from .deps import AppState
 from .frontend import mount_frontend
 from .routes import export, identify, items, numista, system
-from .services.numista import NumistaClient
+from .services.numista import NumistaClient, NumistaError, NumistaNotFound, QuotaError
 
 log = logging.getLogger("obole")
 
@@ -63,6 +64,16 @@ def create_app(
 
     app = FastAPI(title="Obole", version="0.1.0", lifespan=lifespan)
     app.state.obole = state
+
+    # Erreurs métier -> réponses HTTP lisibles, pour toutes les routes (au lieu d'un 500)
+    @app.exception_handler(storage.PhotoError)
+    async def _photo_error(_request: Request, exc: storage.PhotoError) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+
+    @app.exception_handler(NumistaError)
+    async def _numista_error(_request: Request, exc: NumistaError) -> JSONResponse:
+        status = 404 if isinstance(exc, NumistaNotFound) else 429 if isinstance(exc, QuotaError) else 502
+        return JSONResponse({"detail": str(exc)}, status_code=status)
     for module in (identify, items, numista, export, system):
         app.include_router(module.router, prefix="/api")
     # En dernier : la route « attrape-tout » du frontend ne doit pas masquer l'API

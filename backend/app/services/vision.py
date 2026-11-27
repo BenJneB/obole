@@ -11,6 +11,11 @@ import httpx
 from PIL import Image, ImageOps
 
 MAX_SIDE = 768  # côté long envoyé au modèle (px) : ~900 tokens par image, tient en VRAM avec num_ctx 4096
+# Longueur maximale de la réponse (tokens). Une réponse normale en fait 150 à 300 ; sans limite, un
+# modèle qui recopie des inscriptions en boucle peut remplir le contexte et renvoyer un JSON tronqué.
+MAX_OUTPUT_TOKENS = 768
+MAX_INSCRIPTIONS = 12
+MAX_KEYWORDS = 5
 
 # Schéma JSON imposé à la réponse du modèle (paramètre "format" d'Ollama).
 EXTRACTION_SCHEMA: dict = {
@@ -24,11 +29,11 @@ EXTRACTION_SCHEMA: dict = {
         "denomination_text": {"type": ["string", "null"]},
         "year": {"type": ["integer", "null"]},
         "year_visible": {"type": "boolean"},
-        "inscriptions": {"type": "array", "items": {"type": "string"}},
+        "inscriptions": {"type": "array", "items": {"type": "string"}, "maxItems": MAX_INSCRIPTIONS},
         "language_of_inscriptions": {"type": ["string", "null"]},
         "description": {"type": "string"},
         "is_commemorative_guess": {"type": "boolean"},
-        "search_keywords": {"type": "array", "items": {"type": "string"}},
+        "search_keywords": {"type": "array", "items": {"type": "string"}, "maxItems": MAX_KEYWORDS},
     },
     "required": [
         "object_type", "country", "country_confidence", "currency", "denomination_value",
@@ -43,7 +48,8 @@ PROMPT = """You are a numismatic expert. The image(s) show ONE coin, banknote or
 Extract only what is actually visible. Rules:
 - Never invent anything. If a piece of information is not readable, use null.
 - "inscriptions": transcribe every readable inscription exactly as written (original script, \
-original spelling, keep accents and non-Latin characters).
+original spelling, keep accents and non-Latin characters). At most {max_inscriptions} entries, \
+each one only once: do not repeat the same text.
 - "country": the issuing country or state in English, using its historical name if it no longer \
 exists (e.g. "Soviet Union", "Roman Empire"). Deduce it from the inscriptions, language and symbols.
 - "country_confidence": between 0 and 1.
@@ -54,7 +60,8 @@ exists (e.g. "Soviet Union", "Roman Empire"). Deduce it from the inscriptions, l
 - "year": the Gregorian year of issue if a date is visible (convert other calendars, e.g. \
 Japanese era Showa 42 = 1967), otherwise null. "year_visible": true only if a date is printed.
 - "search_keywords": 2 to 5 short English keywords useful to search a coin catalogue \
-(denomination, country, ruler or main design).
+(denomination, country, ruler or main design). For a commemorative issue, include the subject \
+being commemorated (e.g. "Nebra", "Olympic Games", "Mozart").
 - "description": one short sentence describing the design, in French.
 Answer with the JSON object only."""
 
@@ -96,12 +103,14 @@ class VisionError(RuntimeError):
 _capabilities_cache: dict[tuple[str, str], list[str]] = {}
 
 
-async def model_capabilities(ollama_url: str, model: str) -> list[str]:
+async def model_capabilities(
+    ollama_url: str, model: str, transport: httpx.AsyncBaseTransport | None = None
+) -> list[str]:
     """Capacités annoncées par Ollama ("vision", "thinking"...), mémorisées par modèle."""
     key = (ollama_url, model)
     if key not in _capabilities_cache:
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=30, transport=transport) as client:
                 response = await client.post(f"{ollama_url.rstrip('/')}/api/show", json={"model": model})
         except httpx.HTTPError as exc:
             raise VisionError(f"Ollama injoignable sur {ollama_url} : {exc}") from exc
@@ -120,11 +129,12 @@ async def identify(
     model: str,
     num_ctx: int = 4096,
     timeout: float = 300.0,
+    transport: httpx.AsyncBaseTransport | None = None,  # injecté par les tests
 ) -> VisionResult:
     """Envoie 1 ou 2 photos (avers, revers) au modèle et renvoie l'extraction structurée."""
     if not 1 <= len(images) <= 2:
         raise ValueError("1 ou 2 images attendues (avers, revers)")
-    capabilities = await model_capabilities(ollama_url, model)
+    capabilities = await model_capabilities(ollama_url, model, transport=transport)
     if "vision" not in capabilities:
         raise VisionError(f"Le modèle {model} ne lit pas les images (capacités : {capabilities})")
     payload = {
@@ -132,21 +142,23 @@ async def identify(
         "messages": [
             {
                 "role": "user",
-                "content": PROMPT.format(sides=SIDES_TWO if len(images) == 2 else SIDES_ONE),
+                "content": PROMPT.format(
+                    sides=SIDES_TWO if len(images) == 2 else SIDES_ONE, max_inscriptions=MAX_INSCRIPTIONS
+                ),
                 "images": [prepare_image(p) for p in images],
             }
         ],
         "format": EXTRACTION_SCHEMA,
         "stream": False,
         "keep_alive": "30m",
-        "options": {"temperature": 0, "num_ctx": num_ctx},
+        "options": {"temperature": 0, "num_ctx": num_ctx, "num_predict": MAX_OUTPUT_TOKENS},
     }
     if "thinking" in capabilities:
         # Phase de "réflexion" désactivée : bien plus lente, et inutile pour une extraction de texte
         payload["think"] = False
     start = time.perf_counter()
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, transport=transport) as client:
             response = await client.post(f"{ollama_url.rstrip('/')}/api/chat", json=payload)
     except httpx.HTTPError as exc:
         raise VisionError(f"Ollama injoignable sur {ollama_url} : {exc}") from exc
@@ -155,6 +167,11 @@ async def identify(
         raise VisionError(f"Ollama a répondu {response.status_code} : {response.text[:300]}")
     data = response.json()
     content = data.get("message", {}).get("content", "")
+    if data.get("done_reason") == "length":
+        raise VisionError(
+            f"Réponse du modèle tronquée (plus de {MAX_OUTPUT_TOKENS} tokens) : "
+            "réessayer avec une photo plus nette, ou saisir l'objet à la main."
+        )
     try:
         extraction = json.loads(content)
     except json.JSONDecodeError as exc:

@@ -12,8 +12,8 @@ Lancer depuis la racine du dépôt :
   uv run --project backend python scripts/poc_identify.py --bench --models gemma4:e4b,qwen2.5vl:7b
 
 Options : --model, --num-ctx, --no-numista (extraction seule), --json (sortie brute).
-Ce script ne touche pas à la collection : il ne lit que les photos et n'écrit que dans data/cache
-et data/poc-results.
+Ce script ne touche pas à la collection : il lit les photos et n'écrit que dans le cache Numista
+(base SQLite de DATA_DIR, partagé avec le serveur) et data/poc-results.
 """
 
 import argparse
@@ -29,9 +29,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
-from app.config import get_settings
-from app.services import matching, vision
-from app.services.numista import NumistaClient, NumistaError
+from app.config import get_settings  # noqa: E402
+from app.db import init_db, make_engine  # noqa: E402
+from app.services import matching, vision  # noqa: E402
+from app.services.numista import NumistaClient, NumistaError  # noqa: E402
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")  # console Windows
@@ -39,9 +40,10 @@ if hasattr(sys.stdout, "reconfigure"):
 
 def numista_client() -> NumistaClient:
     s = get_settings()
+    engine = make_engine(s.data_path)
+    init_db(engine, s.data_path)
     return NumistaClient(
-        s.numista_api_key.get_secret_value(), s.numista_base_url, s.data_path / "cache",
-        s.numista_monthly_quota,
+        s.numista_api_key.get_secret_value(), s.numista_base_url, engine, s.numista_monthly_quota
     )
 
 
@@ -223,7 +225,8 @@ def main() -> int:
     parser.add_argument("--type", choices=["coin", "banknote", "token"], help="type d'objet pour --search")
     parser.add_argument("--count", type=int, default=10, help="nombre de résultats pour --search")
     parser.add_argument("--bench", action="store_true", help="banc d'essai sur --dir")
-    parser.add_argument("--models", default=s.vision_model, help="modèles à comparer (séparés par des virgules)")
+    parser.add_argument("--models", default=s.vision_model,
+                        help="modèles à comparer (séparés par des virgules)")
     parser.add_argument("--dir", default=str(s.data_path / "test-photos"), help="dossier des photos de test")
     args = parser.parse_args()
 

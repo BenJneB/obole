@@ -95,4 +95,11 @@ class Stats(SQLModel):
     countries: int
     by_type: dict[str, int]
     by_country: dict[str, int]  # pays -> nombre d'objets, du plus fréquent au moins fréquent
-    estimated_value_total: float
+    # année -> nombre d'objets (le frontend regroupe par décennie ou par siècle) ; sans année à part
+    by_year: dict[int, int]
+    without_year: int
+    by_condition: dict[str, int]  # état -> nombre d'objets ("" = non précisé)
+    by_tag: dict[str, int]  # tag -> nombre d'objets, du plus fréquent au moins fréquent
+    identified: int  # objets rattachés à une fiche Numista
+    estimated_value_total: float  # somme de valeur estimée × quantité
+    acquired_price_total: float  # somme des prix payés (prix saisi = prix du lot)

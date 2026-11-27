@@ -5,12 +5,13 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import delete, func, or_
+from pydantic import BaseModel, Field
+from sqlalchemy import ColumnElement, delete, func, literal, or_
 from sqlmodel import Session, col, select
 
 from .. import storage
 from ..deps import AppState, SessionDep, StateDep
-from ..models import Item, ItemFields, Photo, PhotoSide, utcnow
+from ..models import TAG_SEPARATOR, Item, ItemFields, Photo, PhotoSide, normalize_tags, split_tags, utcnow
 from ..schemas import ItemCreate, ItemList, ItemRead, PhotoRead
 from ..services.numista import type_url
 
@@ -18,6 +19,13 @@ router = APIRouter(tags=["collection"])
 
 SORTABLE = {"created_at", "updated_at", "year", "country", "denomination", "estimated_value", "quantity"}
 SEARCHED = ("country", "denomination", "currency", "numista_title", "notes", "tags", "storage_location")
+
+
+def has_tag(tag: str) -> ColumnElement[bool]:
+    """Vrai si l'objet porte ce tag (tags normalisés « a, b, c », comparaison sans casse)."""
+    wrapped = literal(TAG_SEPARATOR) + func.lower(col(Item.tags)) + literal(TAG_SEPARATOR)
+    # instr plutôt que LIKE : un tag peut contenir % ou _
+    return func.instr(wrapped, f"{TAG_SEPARATOR}{tag.lower()}{TAG_SEPARATOR}") > 0
 
 
 def _photos(session: Session, item_id: int) -> list[Photo]:
@@ -81,6 +89,10 @@ def list_items(
     year_min: int | None = None,
     year_max: int | None = None,
     numista_id: int | None = None,
+    tag: str | None = Query(None, description="tag exact (sans tenir compte de la casse)"),
+    condition: str | None = Query(None, description="état exact (UNC, SUP...) ; « none » = non précisé"),
+    storage: str | None = Query(None, description="emplacement (contient)"),
+    identified: bool | None = Query(None, description="true = avec fiche Numista, false = sans"),
     sort: str = Query("-created_at", description="champ de tri, préfixe « - » pour décroissant"),
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
@@ -101,6 +113,16 @@ def list_items(
         conditions.append(col(Item.year) <= year_max)
     if numista_id is not None:
         conditions.append(Item.numista_id == numista_id)
+    if tag and (normalized := normalize_tags(tag)):
+        conditions.append(has_tag(normalized))
+    if condition == "none":
+        conditions.append(or_(col(Item.condition).is_(None), Item.condition == ""))
+    elif condition:
+        conditions.append(Item.condition == condition)
+    if storage:
+        conditions.append(col(Item.storage_location).ilike(f"%{storage.strip()}%"))
+    if identified is not None:
+        conditions.append(col(Item.numista_id).is_not(None) if identified else col(Item.numista_id).is_(None))
 
     field = sort.lstrip("-")
     if field not in SORTABLE:
@@ -121,6 +143,93 @@ def list_items(
         ):
             photos[photo.item_id].append(photo)
     return ItemList(total=total, items=[ItemRead.of(item, photos[item.id]) for item in items])
+
+
+class TagCount(BaseModel):
+    tag: str
+    count: int
+
+
+@router.get("/tags", response_model=list[TagCount])
+def list_tags(session: SessionDep) -> list[TagCount]:
+    """Tous les tags utilisés, du plus fréquent au moins fréquent (suggestions et filtre)."""
+    counts: dict[str, list] = {}  # minuscule -> [graphie la plus récente, nombre]
+    for tags in session.exec(select(Item.tags).where(col(Item.tags).is_not(None)).order_by(col(Item.id))):
+        for tag in split_tags(tags):
+            entry = counts.setdefault(tag.lower(), [tag, 0])
+            entry[0] = tag
+            entry[1] += 1
+    ranked = sorted(counts.values(), key=lambda e: (-e[1], e[0].lower()))
+    return [TagCount(tag=tag, count=count) for tag, count in ranked]
+
+
+class OwnedItem(BaseModel):
+    id: int
+    year: int | None
+    mint_mark: str | None
+    condition: str | None
+    quantity: int
+    denomination: str | None
+    country: str | None
+    thumb_url: str | None
+
+
+@router.get("/items/owned", response_model=dict[int, list[OwnedItem]])
+def owned(
+    session: SessionDep,
+    numista_ids: str = Query(..., description="N# séparés par des virgules (max. 100)"),
+) -> dict[int, list[OwnedItem]]:
+    """Objets déjà dans la collection pour ces fiches Numista (détection des doublons).
+    Une fiche couvre souvent plusieurs années : c'est à moi de juger si c'est le même objet."""
+    try:
+        ids = {int(part) for part in numista_ids.split(",") if part.strip()}
+    except ValueError as exc:
+        raise HTTPException(422, "numista_ids : liste de nombres attendue") from exc
+    if not ids:
+        return {}
+    if len(ids) > 100:
+        raise HTTPException(422, "100 N# au maximum")
+    items = list(session.exec(
+        select(Item).where(col(Item.numista_id).in_(ids)).order_by(col(Item.year), col(Item.id))
+    ))
+    # Miniature : l'avers de préférence, sinon la première photo
+    thumbs: dict[int, Photo] = {}
+    if items:
+        for photo in session.exec(
+            select(Photo).where(col(Photo.item_id).in_([i.id for i in items])).order_by(col(Photo.id))
+        ):
+            current = thumbs.get(photo.item_id)
+            if current is None or (photo.side == PhotoSide.obverse and current.side != PhotoSide.obverse):
+                thumbs[photo.item_id] = photo
+    result: dict[int, list[OwnedItem]] = {}
+    for item in items:
+        thumb = thumbs.get(item.id)
+        result.setdefault(item.numista_id, []).append(OwnedItem(
+            id=item.id, year=item.year, mint_mark=item.mint_mark, condition=item.condition,
+            quantity=item.quantity, denomination=item.denomination, country=item.country,
+            thumb_url=PhotoRead.of(thumb).thumb_url if thumb else None,
+        ))
+    return result
+
+
+class IncrementBody(BaseModel):
+    by: int = Field(1, ge=1, le=1000)
+    # Photos d'une identification devenues inutiles (doublon) : supprimées tout de suite
+    discard_upload_id: str | None = None
+
+
+@router.post("/items/{item_id}/increment", response_model=ItemRead)
+def increment(item_id: int, body: IncrementBody, session: SessionDep, state: StateDep) -> ItemRead:
+    """Doublon : un exemplaire de plus d'un objet existant, au lieu d'un nouvel objet."""
+    item = _get_item(session, item_id)
+    item.quantity += body.by
+    item.updated_at = utcnow()
+    session.add(item)
+    session.commit()
+    if body.discard_upload_id:
+        storage.discard_upload(state.data_dir, body.discard_upload_id)
+    session.refresh(item)
+    return ItemRead.of(item, _photos(session, item_id))
 
 
 @router.get("/items/{item_id}", response_model=ItemRead)

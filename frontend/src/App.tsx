@@ -4,6 +4,7 @@ import AddItem from './pages/AddItem.tsx'
 import Collection from './pages/Collection.tsx'
 import ItemPage from './pages/ItemPage.tsx'
 import Settings from './pages/Settings.tsx'
+import StatsPage from './pages/StatsPage.tsx'
 
 function UpdateBanner() {
   const {
@@ -30,6 +31,7 @@ export default function App() {
           <Route path="/" element={<Collection />} />
           <Route path="/ajouter" element={<AddItem />} />
           <Route path="/objet/:id" element={<ItemPage />} />
+          <Route path="/stats" element={<StatsPage />} />
           <Route path="/reglages" element={<Settings />} />
           <Route path="*" element={<p className="empty">Page introuvable.</p>} />
         </Routes>
@@ -40,6 +42,9 @@ export default function App() {
         </NavLink>
         <NavLink to="/ajouter">
           <span aria-hidden>＋</span>Ajouter
+        </NavLink>
+        <NavLink to="/stats">
+          <span aria-hidden>▤</span>Stats
         </NavLink>
         <NavLink to="/reglages">
           <span aria-hidden>⚙</span>Réglages

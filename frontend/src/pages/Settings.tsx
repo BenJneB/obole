@@ -1,11 +1,91 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, type Health, type Stats } from '../api.ts'
+import { Link } from 'react-router-dom'
+import { api, type BackupStatus, type Health, type Stats } from '../api.ts'
 import { ErrorMessage } from '../components/ui.tsx'
-import { OBJECT_TYPES, formatEuro } from '../format.ts'
+import { formatDateTime } from '../format.ts'
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} Ko`
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 / 1024).toFixed(1).replace('.', ',')} Mo`
+  return `${(bytes / 1024 ** 3).toFixed(2).replace('.', ',')} Go`
+}
+
+function intervalLabel(hours: number): string {
+  if (hours % 24 === 0) return hours === 24 ? 'chaque jour' : `tous les ${hours / 24} jours`
+  return hours === 1 ? 'chaque heure' : `toutes les ${hours} h`
+}
+
+function BackupPanel() {
+  const [status, setStatus] = useState<BackupStatus | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [running, setRunning] = useState(false)
+
+  useEffect(() => {
+    api
+      .backups()
+      .then(setStatus)
+      .catch((e: Error) => setError(e.message))
+  }, [])
+
+  async function backupNow() {
+    setRunning(true)
+    setError(null)
+    try {
+      setStatus(await api.backupNow())
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  const last = status?.backups[0]
+  return (
+    <section className="panel">
+      <h2>Sauvegarde automatique</h2>
+      {status && (
+        <ul className="status">
+          <li className={status.enabled && status.last_status !== 'error' ? 'ok' : 'ko'}>
+            {status.enabled ? (
+              <>
+                <strong>Activée</strong> : {intervalLabel(status.interval_hours)} si la collection a changé, sur le
+                PC. Les {status.keep} plus récentes sont gardées.
+              </>
+            ) : (
+              <>
+                <strong>Désactivée</strong> (BACKUP_INTERVAL_HOURS=0 dans .env)
+              </>
+            )}
+            <span className="muted small block">Dossier : {status.directory}</span>
+            {status.last_status === 'error' && (
+              <span className="small block">Dernier essai en échec : {status.last_error}</span>
+            )}
+          </li>
+        </ul>
+      )}
+      {last ? (
+        <p className="small">
+          Dernière sauvegarde : {formatDateTime(last.created_at)} ({formatSize(last.size)}) ·{' '}
+          {status.backups.length} conservée{status.backups.length > 1 ? 's' : ''}
+        </p>
+      ) : (
+        status && <p className="muted small">Aucune sauvegarde automatique pour l'instant.</p>
+      )}
+      <ErrorMessage message={error} />
+      <button className="btn small" onClick={backupNow} disabled={running}>
+        {running ? 'Sauvegarde en cours…' : 'Sauvegarder maintenant'}
+      </button>
+      <p className="muted small">
+        Ces fichiers restent sur le PC : copie-les de temps en temps ailleurs (clé USB, cloud), ou règle BACKUP_DIR
+        vers un dossier synchronisé.
+      </p>
+    </section>
+  )
+}
 
 export default function Settings() {
   const [health, setHealth] = useState<Health | null>(null)
-  const [stats, setStats] = useState<Stats | null>(null)
+  const [stats, setStats] = useState<Stats | null>(null) // résumé de la collection
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -81,20 +161,15 @@ export default function Settings() {
       {stats && (
         <section className="panel">
           <h2>Collection</h2>
-          <ul className="plain">
-            <li>
-              {stats.items} objet{stats.items > 1 ? 's' : ''}, {stats.total_quantity} exemplaire
-              {stats.total_quantity > 1 ? 's' : ''}, {stats.countries} pays
-            </li>
-            {OBJECT_TYPES.filter((t) => stats.by_type[t.value]).map((t) => (
-              <li key={t.value}>
-                {t.plural} : {stats.by_type[t.value]}
-              </li>
-            ))}
-            {stats.estimated_value_total > 0 && <li>Valeur estimée : {formatEuro(stats.estimated_value_total)}</li>}
-          </ul>
+          <p>
+            {stats.items} objet{stats.items > 1 ? 's' : ''}, {stats.total_quantity} exemplaire
+            {stats.total_quantity > 1 ? 's' : ''}, {stats.countries} pays ·{' '}
+            <Link to="/stats">Statistiques détaillées</Link>
+          </p>
         </section>
       )}
+
+      <BackupPanel />
 
       <section className="panel">
         <h2>Exporter et sauvegarder</h2>
@@ -107,7 +182,7 @@ export default function Settings() {
             Export JSON
           </a>
           <a className="btn" href="/api/backup.zip" download>
-            Sauvegarde complète (base + photos, .zip)
+            Télécharger une sauvegarde complète (base + photos, .zip)
           </a>
         </div>
       </section>

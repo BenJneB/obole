@@ -4,10 +4,13 @@ export default function CandidateCard({
   candidate,
   onChoose,
   compact = false,
+  owned = 0,
 }: {
   candidate: Candidate
   onChoose?: () => void
   compact?: boolean
+  /** Exemplaires de cette fiche déjà dans la collection. */
+  owned?: number
 }) {
   return (
     <div className={compact ? 'candidate compact' : 'candidate'}>
@@ -18,6 +21,7 @@ export default function CandidateCard({
       </div>
       <div className="candidate-text">
         <strong>{candidate.title}</strong>
+        {owned > 0 && <span className="owned-badge">Déjà dans la collection (×{owned})</span>}
         <span className="muted small">
           {candidate.issuer} · {candidate.years} ·{' '}
           <a href={candidate.url} target="_blank" rel="noreferrer">

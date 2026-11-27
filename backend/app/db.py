@@ -79,9 +79,19 @@ def _m2_import_poc_cache(conn: Connection, data_dir: Path) -> None:
         log.info("%d réponse(s) Numista reprise(s) du cache du POC", imported)
 
 
+def _m3_normalize_tags(conn: Connection, data_dir: Path) -> None:
+    """Phase 3 : tags au format normalisé (voir models.normalize_tags), requis par le filtre par tag."""
+    rows = conn.exec_driver_sql("SELECT id, tags FROM items WHERE tags IS NOT NULL").all()
+    for item_id, tags in rows:
+        normalized = models.normalize_tags(tags)
+        if normalized != tags:
+            conn.exec_driver_sql("UPDATE items SET tags = ? WHERE id = ?", (normalized, item_id))
+
+
 MIGRATIONS: list[Callable[[Connection, Path], None]] = [
     _m1_initial_schema,
     _m2_import_poc_cache,
+    _m3_normalize_tags,
 ]
 
 

@@ -29,6 +29,13 @@ class Settings(BaseSettings):
     numista_base_url: str = "https://api.numista.com/v3"
     numista_monthly_quota: int = 2000
 
+    # Sauvegarde ZIP automatique (base + photos). 0 = désactivée.
+    backup_interval_hours: float = 24
+    backup_keep: int = 5  # nombre de sauvegardes automatiques conservées
+    # Dossier des sauvegardes ; vide = DATA_DIR/backups. Idéalement un autre disque ou un dossier
+    # synchronisé (OneDrive, clé USB...) : une copie sur le même disque ne protège pas d'une panne.
+    backup_dir: Path | None = None
+
     # Frontend compilé (npm run build) servi par FastAPI ; ignoré s'il n'existe pas
     frontend_dist: Path = REPO_ROOT / "frontend" / "dist"
 
@@ -36,6 +43,12 @@ class Settings(BaseSettings):
     def data_path(self) -> Path:
         """DATA_DIR résolu : relatif à la racine du dépôt s'il n'est pas absolu."""
         return self.data_dir if self.data_dir.is_absolute() else (REPO_ROOT / self.data_dir).resolve()
+
+    @property
+    def backup_path(self) -> Path:
+        if self.backup_dir is None or str(self.backup_dir) in ("", "."):
+            return self.data_path / "backups"
+        return self.backup_dir if self.backup_dir.is_absolute() else (REPO_ROOT / self.backup_dir).resolve()
 
 
 @lru_cache

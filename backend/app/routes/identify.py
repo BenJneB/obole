@@ -4,6 +4,7 @@ import logging
 from typing import Annotated
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from .. import storage
 from ..deps import AppState, StateDep
@@ -56,27 +57,50 @@ async def identify(
     response.model = result.model
     response.seconds = round(result.seconds, 1)
 
-    try:
-        index, type_ids = await state.matching_context()
-        match = await matching.find_candidates(state.numista, index, result.extraction, type_ids)
-    except NumistaError as exc:
-        log.warning("Échec de la recherche Numista : %s", exc)
-        response.errors.append(f"Recherche Numista impossible : {exc}")
-    else:
-        response.match = MatchRead(
-            issuer_code=match.issuer_code,
-            issuer_name=match.issuer_name,
-            issuer_score=match.issuer_score,
-            queries=match.queries,
-            candidates=[
-                CandidateRead(
-                    id=c.id, title=c.title, issuer=c.issuer, years=c.years, url=c.url,
-                    obverse_thumbnail=c.obverse_thumbnail, reverse_thumbnail=c.reverse_thumbnail,
-                )
-                for c in match.candidates
-            ],
-        )
-        if not match.candidates:
-            response.errors.append("Aucune fiche Numista trouvée : recherche manuelle ou saisie libre.")
+    match, errors = await _search(state, result.extraction)
+    response.match = match
+    response.errors += errors
     response.quota = quota_of(state)
     return response
+
+
+async def _search(state: AppState, extraction: dict) -> tuple[MatchRead | None, list[str]]:
+    try:
+        index, type_ids = await state.matching_context()
+        match = await matching.find_candidates(state.numista, index, extraction, type_ids)
+    except NumistaError as exc:
+        log.warning("Échec de la recherche Numista : %s", exc)
+        return None, [f"Recherche Numista impossible : {exc}"]
+    read = MatchRead(
+        issuer_code=match.issuer_code,
+        issuer_name=match.issuer_name,
+        issuer_score=match.issuer_score,
+        queries=match.queries,
+        candidates=[
+            CandidateRead(
+                id=c.id, title=c.title, issuer=c.issuer, years=c.years, url=c.url,
+                obverse_thumbnail=c.obverse_thumbnail, reverse_thumbnail=c.reverse_thumbnail,
+            )
+            for c in match.candidates
+        ],
+    )
+    if not match.candidates:
+        return read, ["Aucune fiche Numista trouvée : recherche manuelle ou saisie libre."]
+    return read, []
+
+
+class MatchRequest(BaseModel):
+    extraction: dict
+
+
+class MatchResponse(BaseModel):
+    match: MatchRead | None
+    errors: list[str]
+    quota: QuotaRead
+
+
+@router.post("/match", response_model=MatchResponse)
+async def rematch(body: MatchRequest, state: StateDep) -> MatchResponse:
+    """Relance la recherche Numista à partir d'une lecture corrigée à la main (sans le modèle)."""
+    match, errors = await _search(state, body.extraction)
+    return MatchResponse(match=match, errors=errors, quota=quota_of(state))

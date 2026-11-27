@@ -10,7 +10,7 @@ Téléphone (PWA, Chrome)  ──HTTPS Tailscale──▶  PC Windows : serveur 
                                                          └──▶ SQLite + photos (data/)
 ```
 
-> **État du projet :** étape préliminaire, POC (Phase 0) et **backend (Phase 1)** faits : l'API fonctionne, mais il n'y a pas encore d'interface pour le téléphone. Les sections marquées 🚧 décrivent des commandes qui arriveront avec la Phase 2 (PWA).
+> **État du projet :** étape préliminaire, POC (Phase 0), backend (Phase 1) et **appli pour le téléphone (Phase 2)** faits. Prochaine étape (Phase 3) : saisie en série, statistiques, doublons, sauvegarde automatique.
 
 ## Sommaire
 
@@ -20,8 +20,8 @@ Téléphone (PWA, Chrome)  ──HTTPS Tailscale──▶  PC Windows : serveur 
 4. [Partie B : serveur Windows 11](#partie-b--serveur-windows-11)
 5. [Choix du modèle d'IA](#5-choix-du-modèle-dia)
 6. [Lancer l'application](#6-lancer-lapplication)
-7. [Installer l'appli sur le téléphone Android](#7-installer-lappli-sur-le-téléphone-android-)
-8. [Mettre à jour le serveur](#8-mettre-à-jour-le-serveur-)
+7. [Installer l'appli sur le téléphone Android](#7-installer-lappli-sur-le-téléphone-android)
+8. [Mettre à jour le serveur](#8-mettre-à-jour-le-serveur)
 9. [Sauvegarder ses données](#9-sauvegarder-ses-données)
 10. [Dépannage](#10-dépannage)
 
@@ -304,13 +304,22 @@ uv run --project backend python scripts/poc_identify.py --bench --models gemma4:
 
 ## 6. Lancer l'application
 
-> Backend disponible (Phase 1). L'interface pour le téléphone (PWA) et les scripts Windows `start-server.ps1` / `install-autostart.ps1` arrivent en Phase 2 🚧.
+L'application a deux parties : le **backend** (Python, FastAPI, dans `backend/`) et l'**appli** affichée par le téléphone (React, dans `frontend/`). En production, le backend sert aussi l'appli compilée (`frontend/dist`) : **un seul processus**.
 
 **En développement (Ubuntu) :**
 ```bash
-./scripts/dev.sh               # backend avec rechargement automatique (port 8000 ; autre port : ./scripts/dev.sh 8001)
+./scripts/dev.sh                 # backend (port 8000) + appli Vite (port 5173), rechargement automatique
+./scripts/dev.sh --backend-only  # backend seul
 ```
-Ouvre ensuite <http://127.0.0.1:8000/docs> : c'est la **documentation interactive de l'API**, où chaque route peut être essayée depuis le navigateur (bouton *Try it out*). Par exemple `POST /api/identify` avec une photo, puis `POST /api/items` avec l'`upload_id` reçu pour enregistrer l'objet.
+- Ouvre <http://localhost:5173> : c'est l'appli, qui se recharge à chaque modification du code. Dans Chrome, `F12` puis l'icône téléphone (*Toggle device toolbar*) simule un écran de téléphone.
+- <http://127.0.0.1:8000/docs> : **documentation interactive de l'API** ; chaque route peut y être essayée (bouton *Try it out*).
+- Les données de dev sont dans `data/` du poste Ubuntu (distinctes de celles du serveur Windows).
+
+**Écrans de l'appli :**
+- **Collection** : grille de miniatures, recherche, filtres (type, pays), tri. Le bouton **+** ajoute un objet.
+- **Ajouter** : photo de l'avers (et du revers), puis **Identifier**. L'écran **Résultats** montre ce que l'IA a lu (corrigeable, avec « Relancer la recherche ») et les fiches Numista proposées : **C'est celle-ci** ouvre le formulaire pré-rempli (état, quantité…), **Aucune ne correspond** ouvre la recherche Numista manuelle ou la saisie libre. Sans IA (PC sans GPU, Ollama arrêté), l'ajout reste possible par recherche Numista ou saisie manuelle.
+- **Fiche** : photos (toucher pour agrandir), lien vers Numista, informations ; **Modifier**, **Ajouter une photo**, suppression (en deux appuis pour éviter les erreurs).
+- **Réglages** : état de l'IA et du quota Numista, résumé de la collection, exports et sauvegarde.
 
 **Ce que fait l'API :**
 
@@ -332,43 +341,54 @@ Ouvre ensuite <http://127.0.0.1:8000/docs> : c'est la **documentation interactiv
 cd backend
 uv run ruff check . ../scripts   # style et erreurs courantes
 uv run pytest                    # tests : Ollama et Numista sont simulés (ni GPU, ni réseau, ni quota)
+cd ../frontend
+npm run lint                     # ESLint
+npm run build                    # vérification des types TypeScript + compilation
 ```
-Les mêmes vérifications tournent automatiquement sur GitHub à chaque **pull request** (onglet **Actions** du dépôt, ou bouton *Run workflow* pour les lancer à la main), sous **Ubuntu et Windows**, avec en plus l'analyse des scripts `.sh` (shellcheck) et `.ps1` (syntaxe, PSScriptAnalyzer, caractères ASCII). Une croix rouge sur un commit signale un problème : clique dessus pour voir le détail.
+Les mêmes vérifications tournent automatiquement sur GitHub à chaque **pull request** (onglet **Actions** du dépôt, ou bouton *Run workflow* pour les lancer à la main) : backend sous **Ubuntu et Windows**, appli, et analyse des scripts `.sh` (shellcheck) et `.ps1` (syntaxe, PSScriptAnalyzer, caractères ASCII). Une croix rouge signale un problème : clique dessus pour voir le détail.
 
-**En production (Windows) :**
+**En production (Windows), première fois :**
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\start-server.ps1
+cd $HOME\obole                   # dossier du dépôt sur le PC
+powershell -ExecutionPolicy Bypass -File .\scripts\update-server.ps1 -NoPull      # compile l'appli et lance le serveur
+tailscale serve --bg 8000         # une seule fois : HTTPS pour le téléphone
+powershell -ExecutionPolicy Bypass -File .\scripts\install-autostart.ps1          # démarrage automatique
 ```
-Le serveur écoute sur `127.0.0.1:8000` uniquement. Pour y accéder depuis le téléphone, **une seule fois** :
-```powershell
-tailscale serve --bg 8000
-```
-L'appli est alors disponible sur `https://<nom-pc>.<tailnet>.ts.net`. Le script `setup-windows.ps1` affiche ce nom dans son résumé.
-
-**Démarrage automatique à l'ouverture de session :**
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\install-autostart.ps1
-```
+- `start-server.ps1` lance le serveur dans la fenêtre courante (`Ctrl+C` pour l'arrêter). Avant de démarrer, il vérifie l'alimentation et affiche un **avertissement bien visible** si le PC risque de se mettre en veille ; tant qu'il tourne, il **empêche la mise en veille**.
+- Le serveur écoute sur `127.0.0.1:8000` uniquement : il n'est joignable que depuis le PC lui-même et, grâce à `tailscale serve`, depuis tes appareils Tailscale via `https://<nom-pc>.<tailnet>.ts.net` (affiché par `tailscale serve status`).
+- `install-autostart.ps1` crée la tâche planifiée **« Obole - serveur »** : à chaque ouverture de session, 30 s après, le serveur démarre en arrière-plan (fenêtre cachée), avec des journaux dans `data\logs\` et une relance automatique en cas de plantage. Si Windows refuse de créer la tâche, le script met à la place un raccourci dans le dossier *Démarrage* (même effet). Pour le retirer : `install-autostart.ps1 -Remove`.
+- La session Windows doit être ouverte (pas forcément déverrouillée) : active l'ouverture de session automatique si le PC redémarre seul, ou ouvre ta session après chaque redémarrage.
 
 ---
 
-## 7. Installer l'appli sur le téléphone Android 🚧
+## 7. Installer l'appli sur le téléphone Android
 
 1. Installe l'appli **Tailscale** depuis le Play Store et connecte-toi avec **le même compte**.
-2. Ouvre `https://<nom-pc>.<tailnet>.ts.net` dans **Chrome**.
-3. Menu **⋮**, puis **Installer l'application** (ou « Ajouter à l'écran d'accueil »).
+2. Ouvre `https://<nom-pc>.<tailnet>.ts.net` dans **Chrome** (le serveur doit tourner et `tailscale serve --bg 8000` avoir été lancé sur le PC).
+3. Menu **⋮**, puis **Installer l'application** (ou « Ajouter à l'écran d'accueil »). L'icône Obole apparaît sur l'écran d'accueil ; l'appli s'ouvre en plein écran, sans barre d'adresse.
 4. À la première photo, **autorise l'accès à l'appareil photo**.
+
+**Mises à jour de l'appli :** rien à réinstaller. Après un `update-server.ps1`, l'appli affiche « Nouvelle version disponible » : touche **Mettre à jour**. La version installée est indiquée en bas des *Réglages*.
+
+**PC éteint ou Tailscale déconnecté :** l'appli s'ouvre quand même (elle est gardée sur le téléphone) mais affiche « Serveur injoignable ». Les photos déjà vues restent visibles.
 
 ---
 
-## 8. Mettre à jour le serveur 🚧
+## 8. Mettre à jour le serveur
 
 Sur le PC Windows :
 ```powershell
 cd $HOME\obole
 powershell -ExecutionPolicy Bypass -File .\scripts\update-server.ps1
 ```
-Le script fait `git pull`, `uv sync`, `npm ci` puis `npm run build`, et redémarre le serveur. En attendant qu'il existe, `git pull` puis relancer `setup-windows.ps1` suffit pour les outils.
+Le script :
+1. affiche les rappels ci-dessous et vérifie l'alimentation ;
+2. fait `git pull` (il refuse si des fichiers du dépôt ont été modifiés sur le PC : le serveur ne doit rien modifier lui-même) ;
+3. installe les dépendances Python (`uv sync`) et compile l'appli (`npm ci`, `npm run build`) ;
+4. arrête le serveur et le relance (par la tâche planifiée si elle existe, sinon dans une nouvelle fenêtre) ;
+5. attend qu'il réponde et affiche l'état de l'IA et du quota Numista.
+
+Options : `-NoPull` (recompiler et redémarrer sans récupérer de code), `-NoRestart`.
 
 > **🔔 Rappel à chaque mise à jour :**
 > - PC **branché sur secteur** ;
@@ -385,7 +405,7 @@ Si une nouvelle dépendance système apparaît, les scripts `setup-*` et ce READ
 Toutes tes données sont dans le dossier **`data/`** (base SQLite et photos), réglable via `DATA_DIR`. Ce dossier n'est **pas** sur GitHub.
 
 - **Méthode simple, disponible dès maintenant :** arrête le serveur, puis copie tout le dossier `data/` sur une clé USB ou un cloud personnel.
-- **Sans arrêter le serveur :** ouvre <http://127.0.0.1:8000/api/backup.zip> sur le PC : il télécharge `obole-backup-<date>.zip` (copie cohérente de la base + toutes les photos). Exports lisibles : `/api/export.csv` (s'ouvre dans Excel) et `/api/export.json`. 🚧 En Phase 2 : bouton *Sauvegarde* dans les *Réglages* de l'appli.
+- **Depuis l'appli (sans arrêter le serveur) :** *Réglages* > **Sauvegarde complète** télécharge `obole-backup-<date>.zip` (copie cohérente de la base + toutes les photos). **Export CSV** (s'ouvre dans Excel) et **Export JSON** donnent la liste lisible. Sur le PC, les mêmes fichiers sont à <http://127.0.0.1:8000/api/backup.zip>, `/api/export.csv` et `/api/export.json`.
 - **Restaurer :** serveur arrêté, remettre le dossier `data/` en place (ou extraire `backup.zip` dans `data/`).
 
 ---
@@ -402,6 +422,8 @@ Toutes tes données sont dans le dossier **`data/`** (base SQLite et photos), r�
 | Ubuntu n'arrive pas à joindre `http://<pc>:11434` | PC allumé ? Tailscale connecté des deux côtés ? `setup-windows.ps1 -RemoteOllama` lancé, et Ollama redémarré ensuite ? |
 | Erreur Numista 401/403 | Clé absente ou fausse dans `.env` |
 | Erreur Numista 429 | Trop de requêtes : l'appli attend automatiquement ; vérifier le quota du mois dans *Réglages* |
+| L'appli affiche « Serveur injoignable » | PC allumé et session ouverte ? Serveur lancé (`http://127.0.0.1:8000` sur le PC) ? Journaux dans `data\logs\` |
+| « Nouvelle version disponible » ne disparaît pas | Fermer complètement l'appli (liste des applis récentes) et la rouvrir |
 | Le téléphone n'ouvre pas l'URL `…ts.net` | Tailscale actif sur le téléphone ? `tailscale serve status` sur le PC ? HTTPS Certificates activé dans la console Tailscale ? |
 
 ### Dépannage GPU (Windows)

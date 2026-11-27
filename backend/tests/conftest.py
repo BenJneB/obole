@@ -167,6 +167,7 @@ def settings(data_dir: Path) -> Settings:
         numista_api_key="test-key",
         numista_base_url=NUMISTA_URL,
         numista_monthly_quota=2000,
+        frontend_dist=data_dir.parent / "dist",  # absent par défaut : tests de l'API seule
     )
 
 

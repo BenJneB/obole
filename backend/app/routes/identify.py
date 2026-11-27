@@ -1,14 +1,15 @@
 """Identification par photo : modèle vision local puis croisement avec Numista."""
 
+import asyncio
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, UploadFile
 from pydantic import BaseModel
 
 from .. import storage
 from ..deps import AppState, StateDep
-from ..schemas import CandidateRead, IdentifyResponse, MatchRead, QuotaRead
+from ..schemas import IdentifyResponse, MatchRead, QuotaRead
 from ..services import matching, vision
 from ..services.numista import NumistaError
 
@@ -33,11 +34,9 @@ async def identify(
     photos = {"obverse": await obverse.read()}
     if reverse is not None and reverse.filename:
         photos["reverse"] = await reverse.read()
-    try:
-        upload_id, paths = storage.save_upload(state.data_dir, photos)
-    except storage.PhotoError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    storage.purge_old_uploads(state.data_dir)
+    # Vérification Pillow et écriture disque : hors de la boucle asyncio
+    upload_id, paths = await asyncio.to_thread(storage.save_upload, state.data_dir, photos)
+    await asyncio.to_thread(storage.purge_old_uploads, state.data_dir)
 
     response = IdentifyResponse(upload_id=upload_id, sides=list(paths), quota=quota_of(state))
     settings = state.settings
@@ -71,19 +70,7 @@ async def _search(state: AppState, extraction: dict) -> tuple[MatchRead | None, 
     except NumistaError as exc:
         log.warning("Échec de la recherche Numista : %s", exc)
         return None, [f"Recherche Numista impossible : {exc}"]
-    read = MatchRead(
-        issuer_code=match.issuer_code,
-        issuer_name=match.issuer_name,
-        issuer_score=match.issuer_score,
-        queries=match.queries,
-        candidates=[
-            CandidateRead(
-                id=c.id, title=c.title, issuer=c.issuer, years=c.years, url=c.url,
-                obverse_thumbnail=c.obverse_thumbnail, reverse_thumbnail=c.reverse_thumbnail,
-            )
-            for c in match.candidates
-        ],
-    )
+    read = MatchRead.model_validate(match)
     if not match.candidates:
         return read, ["Aucune fiche Numista trouvée : recherche manuelle ou saisie libre."]
     return read, []

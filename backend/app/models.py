@@ -6,7 +6,10 @@ Toute modification de schéma doit être accompagnée d'une migration dans db.py
 from datetime import UTC, date, datetime
 from enum import StrEnum
 
+from pydantic import field_validator
 from sqlmodel import Field, SQLModel
+
+TAG_SEPARATOR = ", "
 
 
 def utcnow() -> datetime:
@@ -35,6 +38,24 @@ class IdentificationSource(StrEnum):
 # --- Collection ----------------------------------------------------------------------
 
 
+def normalize_tags(raw: str | None) -> str | None:
+    """« pays-bas,  album 2,Album 2 » -> « pays-bas, album 2 » : espaces nettoyés, doublons retirés
+    (sans tenir compte de la casse), ordre conservé. Une chaîne vide devient None.
+    Format stocké : tags séparés par ", " (lisible dans l'export CSV, filtrable en SQL)."""
+    if raw is None:
+        return None
+    seen: dict[str, str] = {}
+    for part in raw.split(","):
+        tag = " ".join(part.split())
+        if tag and tag.lower() not in seen:
+            seen[tag.lower()] = tag
+    return TAG_SEPARATOR.join(seen.values()) or None
+
+
+def split_tags(tags: str | None) -> list[str]:
+    return [t for t in (tags or "").split(TAG_SEPARATOR) if t]
+
+
 class ItemFields(SQLModel):
     """Champs modifiables d'un objet (partagés entre la table et les schémas d'API)."""
 
@@ -60,6 +81,11 @@ class ItemFields(SQLModel):
     tags: str | None = None  # séparés par des virgules
 
     identification_source: IdentificationSource = IdentificationSource.manual
+
+    @field_validator("tags")
+    @classmethod
+    def _normalize_tags(cls, value: str | None) -> str | None:
+        return normalize_tags(value)
 
 
 class Item(ItemFields, table=True):

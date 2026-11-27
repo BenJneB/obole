@@ -36,7 +36,7 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
-$RepoRoot = Split-Path -Parent $PSScriptRoot
+. "$PSScriptRoot\common.ps1"  # $RepoRoot, Write-Step/Info, Get-EnvFileValue, Get-AcPowerValue...
 $OllamaApi = "http://localhost:11434"
 $FirewallRuleAllow = "Obole - Ollama 11434 (Tailscale uniquement)"
 $FirewallRuleBlock = "Obole - Ollama 11434 (bloquer hors Tailscale)"
@@ -44,8 +44,6 @@ $FirewallRuleBlock = "Obole - Ollama 11434 (bloquer hors Tailscale)"
 # --- Affichage et resume -----------------------------------------------------
 $Summary = @{ Ok = @(); Installed = @(); Todo = @(); Failed = @() }
 
-function Write-Step([string]$Text) { Write-Host ""; Write-Host "==> $Text" -ForegroundColor Cyan }
-function Write-Info([string]$Text) { Write-Host "    $Text" }
 function Add-Ok([string]$Text)        { Write-Host "    [OK] $Text" -ForegroundColor Green;       $script:Summary.Ok += $Text }
 function Add-Installed([string]$Text) { Write-Host "    [INSTALLE] $Text" -ForegroundColor Green; $script:Summary.Installed += $Text }
 function Add-Todo([string]$Text)      { Write-Host "    [A FAIRE] $Text" -ForegroundColor Yellow; $script:Summary.Todo += $Text }
@@ -78,15 +76,6 @@ function Wait-Ollama([int]$Seconds = 60) {
         Start-Sleep -Seconds 1
     }
     return $false
-}
-
-function Get-EnvFileValue([string]$Key) {
-    # Lit une valeur de .env sans l'afficher.
-    $file = Join-Path $RepoRoot ".env"
-    if (-not (Test-Path $file)) { return $null }
-    $line = Get-Content $file | Where-Object { $_ -match "^\s*$Key=" } | Select-Object -Last 1
-    if (-not $line) { return $null }
-    return ($line -replace "^\s*$Key=", "").Trim().Trim('"').Trim("'")
 }
 
 Write-Host "Obole - preparation du serveur Windows" -ForegroundColor White
@@ -310,16 +299,6 @@ if (-not (Test-Command "ollama")) {
 # 7. Alimentation (PC portable utilise comme serveur)
 # =============================================================================
 Write-Step "7. Alimentation (sur secteur)"
-# Valeur "secteur" (AC) d'un reglage : avant-derniere valeur hexadecimale de
-# 'powercfg /query' (la derniere est la valeur batterie). Independant de la langue.
-function Get-AcPowerValue([string]$SubGroup, [string]$Setting) {
-    $out = powercfg /query SCHEME_CURRENT $SubGroup $Setting 2>$null
-    if ($LASTEXITCODE -ne 0) { return $null }
-    $hex = [regex]::Matches(($out -join "`n"), "0x[0-9a-fA-F]+") | ForEach-Object { $_.Value }
-    if ($hex.Count -lt 2) { return $null }
-    return [Convert]::ToInt64($hex[$hex.Count - 2], 16)
-}
-
 $standby = Get-AcPowerValue "SUB_SLEEP" "STANDBYIDLE"
 $lid = Get-AcPowerValue "SUB_BUTTONS" "LIDACTION"
 $standbyOk = ($standby -eq 0)
@@ -429,11 +408,7 @@ Write-List "A FAIRE" $Summary.Todo "Yellow"
 Write-List "ECHEC" $Summary.Failed "Red"
 Write-Host "======================================================================" -ForegroundColor White
 Write-Host ""
-Write-Host "RAPPEL serveur (a chaque deploiement / mise a jour) :" -ForegroundColor Yellow
-Write-Host "  - PC branche sur secteur"
-Write-Host "  - mise en veille sur secteur : JAMAIS"
-Write-Host "  - fermer le capot : NE RIEN FAIRE"
-Write-Host "  - apres la premiere identification : 'ollama ps' doit afficher 100% GPU"
+Show-DeployReminder
 
 if ($Summary.Failed.Count -gt 0) { exit 1 }
 exit 0

@@ -37,7 +37,9 @@ function Invoke-Native([string]$Label, [string]$Directory, [scriptblock]$Command
     # Lance une commande externe et verifie son code de sortie.
     Push-Location $Directory
     try {
-        & $Command
+        # Out-Host : sinon la sortie de la commande s'ajoute a la valeur renvoyee
+        # (@("...", $false) est "vrai" et un echec passerait inapercu)
+        & $Command | Out-Host
         if ($LASTEXITCODE -ne 0) {
             Write-Fail "$Label (code $LASTEXITCODE)"
             return $false
@@ -94,20 +96,13 @@ if ($NoRestart) {
 Write-Step "5. Redemarrage du serveur"
 if (Stop-OboleServer $port) { Write-Ok "Ancien serveur arrete" } else { Write-Info "Aucun serveur en cours" }
 
-$startScript = Join-Path $PSScriptRoot "start-server.ps1"
-$task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-if ($task) {
-    Start-ScheduledTask -TaskName $TaskName
-    Write-Info "Relance via la tache planifiee '$TaskName' (journaux : data\logs\)"
-} elseif (Test-Path $StartupShortcut) {
-    Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(
-        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$startScript`"", "-Background")
-    Write-Info "Relance en arriere-plan (journaux : data\logs\)"
-} else {
-    Start-Process powershell.exe -ArgumentList @(
-        "-NoProfile", "-NoExit", "-ExecutionPolicy", "Bypass", "-File", "`"$startScript`"")
-    Write-Info "Relance dans une nouvelle fenetre (la laisser ouverte)."
-    Write-Info "Demarrage automatique : scripts\install-autostart.ps1"
+switch (Start-OboleServer -Background:(Test-Path $StartupShortcut)) {
+    "task" { Write-Info "Relance via la tache planifiee '$TaskName' (journaux : data\logs\)" }
+    "background" { Write-Info "Relance en arriere-plan (journaux : data\logs\)" }
+    default {
+        Write-Info "Relance dans une nouvelle fenetre (la laisser ouverte)."
+        Write-Info "Demarrage automatique : scripts\install-autostart.ps1"
+    }
 }
 
 $health = Wait-OboleHealth $port

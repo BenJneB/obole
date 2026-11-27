@@ -1,18 +1,21 @@
 """Construction de l'application FastAPI (utilisée par main.py et par les tests)."""
 
+import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
-from . import storage
+from . import backup, storage
 from .config import Settings, get_settings
 from .db import init_db, make_engine
 from .deps import AppState
 from .frontend import mount_frontend
 from .routes import export, identify, items, numista, system
-from .services.numista import NumistaClient
+from .services.numista import NumistaClient, NumistaError, NumistaNotFound, QuotaError
 
 log = logging.getLogger("obole")
 
@@ -46,11 +49,31 @@ def create_app(
         removed = storage.purge_old_uploads(data_dir)
         if removed:
             log.info("%d envoi(s) de photos expiré(s) supprimé(s)", removed)
+        task = None
+        if settings.backup_interval_hours > 0:
+            task = asyncio.create_task(backup.scheduler(
+                data_dir, settings.backup_path, engine,
+                settings.backup_interval_hours, settings.backup_keep, state.backup_lock,
+            ))
         yield
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         engine.dispose()
 
     app = FastAPI(title="Obole", version="0.1.0", lifespan=lifespan)
     app.state.obole = state
+
+    # Erreurs métier -> réponses HTTP lisibles, pour toutes les routes (au lieu d'un 500)
+    @app.exception_handler(storage.PhotoError)
+    async def _photo_error(_request: Request, exc: storage.PhotoError) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+
+    @app.exception_handler(NumistaError)
+    async def _numista_error(_request: Request, exc: NumistaError) -> JSONResponse:
+        status = 404 if isinstance(exc, NumistaNotFound) else 429 if isinstance(exc, QuotaError) else 502
+        return JSONResponse({"detail": str(exc)}, status_code=status)
     for module in (identify, items, numista, export, system):
         app.include_router(module.router, prefix="/api")
     # En dernier : la route « attrape-tout » du frontend ne doit pas masquer l'API

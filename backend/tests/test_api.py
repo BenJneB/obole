@@ -9,23 +9,7 @@ from sqlmodel import Session
 
 from app.db import DB_FILENAME, MIGRATIONS, init_db
 
-from .conftest import EXTRACTION, make_image
-
-
-def identify(client, jpeg, reverse=True):
-    files = {"obverse": ("avers.jpg", jpeg, "image/jpeg")}
-    if reverse:
-        files["reverse"] = ("revers.jpg", make_image((10, 20, 30)), "image/jpeg")
-    response = client.post("/api/identify", files=files)
-    assert response.status_code == 200, response.text
-    return response.json()
-
-
-def create(client, **fields):
-    response = client.post("/api/items", json={"country": "France", "denomination": "2 euro", **fields})
-    assert response.status_code == 201, response.text
-    return response.json()
-
+from .conftest import EXTRACTION, create, identify, make_image
 
 # --- identification ------------------------------------------------------------------------------
 
@@ -201,7 +185,10 @@ def test_numista_search_and_detail(client, fake_numista):
     response = client.get("/api/numista/search", params={"q": "2 euro", "issuer": "france",
                                                          "object_type": "banknote"})
     assert response.status_code == 200
-    assert response.json()["count"] == 2
+    candidates = response.json()
+    assert [c["id"] for c in candidates] == [1001, 1002]
+    assert candidates[0]["years"] == "2001-2024"
+    assert candidates[0]["url"] == "https://fr.numista.com/1001"
     search = fake_numista.requests[-1]
     assert search.url.params["object_type"] == "18"
     assert search.url.params["lang"] == "fr"
@@ -265,14 +252,19 @@ def test_backup_zip(client, jpeg, data_dir):
 
 
 def test_stats(client):
-    create(client, country="France", quantity=2, estimated_value=3.0)
-    create(client, country="france", quantity=1, estimated_value=None, object_type="banknote")
+    create(client, country="France", quantity=2, estimated_value=3.0, year=1998, condition="SUP",
+           tags="euro, album 1", acquired_price=5, numista_id=1001)
+    create(client, country="france", quantity=1, estimated_value=None, object_type="banknote", year=1998,
+           tags="Euro")
+    create(client, country="Japan", year=1867, acquired_price=2.5)
     create(client, country="Japan")
     stats = client.get("/api/stats").json()
     assert stats == {
-        "items": 3, "total_quantity": 4, "countries": 2,
-        "by_type": {"coin": 2, "banknote": 1}, "by_country": {"France": 2, "Japan": 1},
-        "estimated_value_total": 6.0,
+        "items": 4, "total_quantity": 5, "countries": 2,
+        "by_type": {"coin": 3, "banknote": 1}, "by_country": {"France": 2, "Japan": 2},
+        "by_year": {"1867": 1, "1998": 2}, "without_year": 1,
+        "by_condition": {"": 3, "SUP": 1}, "by_tag": {"Euro": 2, "album 1": 1}, "identified": 1,
+        "estimated_value_total": 6.0, "acquired_price_total": 7.5,
     }
 
 

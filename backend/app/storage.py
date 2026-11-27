@@ -50,8 +50,8 @@ def check_image(data: bytes) -> str:
 
 def make_thumbnail(source: Path, target: Path) -> None:
     with Image.open(source) as img:
+        img.thumbnail((THUMB_SIDE, THUMB_SIDE))  # avant exif_transpose : décodage réduit du JPEG
         img = ImageOps.exif_transpose(img)
-        img.thumbnail((THUMB_SIDE, THUMB_SIDE))
         if img.mode != "RGB":
             img = img.convert("RGB")
         img.save(target, "JPEG", quality=85)

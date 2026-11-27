@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import {
   api,
   identify,
@@ -10,11 +10,83 @@ import {
   type ItemFields,
   type Match,
   type ObjectType,
+  type OwnedItem,
 } from '../api.ts'
 import CandidateCard from '../components/CandidateCard.tsx'
 import ItemForm from '../components/ItemForm.tsx'
+import { existingTags } from '../tags.ts'
 import { CameraButton, ErrorMessage, Notice } from '../components/ui.tsx'
-import { OBJECT_TYPES } from '../format.ts'
+import { OBJECT_TYPES, itemTitle, plural } from '../format.ts'
+
+// Mode série : champs repris d'un objet au suivant (même album, même lot, même jour d'achat)
+const CARRIED_OVER = ['storage_location', 'tags', 'acquired_date'] as const
+const SERIES_KEY = 'obole.serie'
+
+function loadSeriesFlag(): boolean {
+  try {
+    return localStorage.getItem(SERIES_KEY) === '1'
+  } catch {
+    return false // stockage indisponible (navigation privée...) : simple valeur par défaut
+  }
+}
+
+function saveSeriesFlag(on: boolean) {
+  try {
+    localStorage.setItem(SERIES_KEY, on ? '1' : '0')
+  } catch {
+    // sans conséquence : le mode série reste actif jusqu'à la fermeture de l'appli
+  }
+}
+
+interface SeriesProgress {
+  count: number
+  last: { id: number; label: string }
+}
+
+/** Objets déjà dans la collection pour ces N# (détection des doublons). */
+function useOwned(numistaIds: number[]): Record<number, OwnedItem[]> {
+  const key = [...new Set(numistaIds)].sort((a, b) => a - b).join(',')
+  const [owned, setOwned] = useState<{ key: string; data: Record<number, OwnedItem[]> }>({ key: '', data: {} })
+  useEffect(() => {
+    if (!key) return
+    let cancelled = false
+    api
+      .owned(key.split(',').map(Number))
+      .then((data) => !cancelled && setOwned({ key, data }))
+      .catch(() => undefined) // information de confort : on ignore une erreur réseau
+    return () => {
+      cancelled = true
+    }
+  }, [key])
+  return owned.key === key ? owned.data : {}
+}
+
+/** Liste de fiches Numista, chacune marquée si elle est déjà dans la collection. */
+function CandidateList({ candidates, onChoose }: { candidates: Candidate[]; onChoose: (c: Candidate) => void }) {
+  const owned = useOwned(candidates.map((c) => c.id))
+  return (
+    <ul className="candidates">
+      {candidates.map((c) => (
+        <li key={c.id}>
+          <CandidateCard
+            candidate={c}
+            owned={(owned[c.id] ?? []).reduce((n, i) => n + i.quantity, 0)}
+            onChoose={() => onChoose(c)}
+          />
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/** Champs corrigeables de la lecture de l'IA, en texte (valeurs des <input>). */
+function draftOf(extraction: Extraction | null) {
+  return {
+    country: extraction?.country ?? '',
+    denomination_text: extraction?.denomination_text ?? '',
+    year: extraction?.year != null ? String(extraction.year) : '',
+  }
+}
 
 type Step =
   | { kind: 'photos' }
@@ -31,6 +103,9 @@ export default function AddItem() {
   const [result, setResult] = useState<IdentifyResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const abort = useRef<(() => void) | null>(null)
+  const [series, setSeries] = useState(loadSeriesFlag)
+  const [progress, setProgress] = useState<SeriesProgress | null>(null)
+  const [carried, setCarried] = useState<Partial<ItemFields>>({})
 
   useEffect(() => () => abort.current?.(), []) // quitter la page annule l'envoi en cours
 
@@ -66,6 +141,7 @@ export default function AddItem() {
       currency: e?.currency ?? null,
       year: e?.year ?? null,
       quantity: 1,
+      ...(series ? carried : {}),
     }
     if (candidate) {
       initial.numista_id = candidate.id
@@ -85,13 +161,52 @@ export default function AddItem() {
       upload_id: result?.upload_id ?? null,
       ai_extraction: result?.extraction ?? null,
     })
-    // Saisie manuelle sans identification : les photos n'ont pas encore été envoyées
+    // Saisie manuelle sans identification : les photos n'ont pas encore été envoyées.
+    // L'objet existe déjà : un échec ici ne doit pas remonter au formulaire (le renvoyer
+    // créerait un doublon) ; on le signale et la photo pourra être ajoutée depuis la fiche.
+    let photoError: string | null = null
     if (!result) {
       for (const [file, side] of [[obverse, 'obverse'], [reverse, 'reverse']] as const) {
-        if (file) await api.addPhoto(item.id, file, side)
+        if (!file) continue
+        try {
+          await api.addPhoto(item.id, file, side)
+        } catch (e) {
+          photoError = `Objet enregistré, mais photo non ajoutée : ${(e as Error).message}`
+        }
       }
     }
-    navigate(`/objet/${item.id}`, { replace: true, state: { added: true } })
+    if (series) {
+      nextInSeries(item.id, itemTitle(item), fields)
+      if (photoError) setError(photoError)
+      return
+    }
+    navigate(`/objet/${item.id}`, { replace: true, state: { added: true, photoError } })
+  }
+
+  /** Doublon : +1 exemplaire sur l'objet existant (les nouvelles photos ne sont pas gardées). */
+  async function addCopy(owned: OwnedItem) {
+    const item = await api.incrementItem(owned.id, result?.upload_id ?? null)
+    if (series) return nextInSeries(item.id, `${itemTitle(item)} (×${item.quantity})`, null)
+    navigate(`/objet/${item.id}`, { replace: true, state: { incremented: item.quantity } })
+  }
+
+  function nextInSeries(id: number, label: string, fields: Partial<ItemFields> | null) {
+    if (fields) {
+      setCarried(Object.fromEntries(CARRIED_OVER.map((key) => [key, fields[key] ?? null])))
+      if (fields.tags) existingTags(true) // nouveaux tags proposés dès l'objet suivant
+    }
+    setProgress((p) => ({ count: (p?.count ?? 0) + 1, last: { id, label } }))
+    restart()
+    window.scrollTo(0, 0)
+  }
+
+  function toggleSeries(on: boolean) {
+    setSeries(on)
+    saveSeriesFlag(on)
+    if (!on) {
+      setProgress(null)
+      setCarried({})
+    }
   }
 
   function restart() {
@@ -135,9 +250,12 @@ export default function AddItem() {
         <header className="page-header">
           <h1>Enregistrer</h1>
         </header>
+        {step.initial.numista_id != null && (
+          <Duplicates numistaId={step.initial.numista_id} year={step.initial.year ?? null} onAddCopy={addCopy} />
+        )}
         <ItemForm
           initial={step.initial}
-          submitLabel="Ajouter à la collection"
+          submitLabel={series ? 'Ajouter et passer au suivant' : 'Ajouter à la collection'}
           onSubmit={(fields) => save(fields, candidate)}
           onCancel={() => setStep(result ? { kind: 'results' } : { kind: 'photos' })}
           header={candidate && <CandidateCard candidate={candidate} compact />}
@@ -152,6 +270,12 @@ export default function AddItem() {
         <h1>Ajouter un objet</h1>
         <p className="muted">Photographie l'objet de près, sur un fond uni et bien éclairé.</p>
       </header>
+      {progress && (
+        <p className="success" role="status">
+          ✓ <Link to={`/objet/${progress.last.id}`}>{progress.last.label}</Link> enregistré.{' '}
+          {plural(progress.count, 'objet')} dans cette série.
+        </p>
+      )}
       <div className="cameras">
         <CameraButton label="Avers" file={obverse} onChange={setObverse} />
         <CameraButton label="Revers (facultatif)" file={reverse} onChange={setReverse} />
@@ -174,6 +298,23 @@ export default function AddItem() {
           Saisie manuelle
         </button>
       </div>
+      <label className="switch">
+        <input type="checkbox" checked={series} onChange={(e) => toggleSeries(e.target.checked)} />
+        <span>
+          <strong>Mode série</strong>
+          <span className="muted small block">
+            Enchaîner plusieurs objets : après chaque ajout, retour ici, avec l'emplacement, les tags et la date
+            d'acquisition repris de l'objet précédent.
+          </span>
+        </span>
+      </label>
+      {progress && (
+        <div className="actions">
+          <button className="btn" onClick={() => navigate('/')}>
+            Terminer la série
+          </button>
+        </div>
+      )}
     </>
   )
 }
@@ -237,20 +378,12 @@ function Results({
   onRestart: () => void
 }) {
   const extraction = result.extraction
-  const [draft, setDraft] = useState(() => ({
-    country: extraction?.country ?? '',
-    denomination_text: extraction?.denomination_text ?? '',
-    year: extraction?.year != null ? String(extraction.year) : '',
-  }))
+  const initialDraft = draftOf(extraction)
+  const [draft, setDraft] = useState(initialDraft)
   const [searching, setSearching] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const candidates = result.match?.candidates ?? []
-
-  const changed =
-    extraction &&
-    (draft.country !== (extraction.country ?? '') ||
-      draft.denomination_text !== (extraction.denomination_text ?? '') ||
-      draft.year !== (extraction.year != null ? String(extraction.year) : ''))
+  const changed = extraction && EDITABLE.some(({ key }) => draft[key] !== initialDraft[key])
 
   async function researchWithCorrection() {
     if (!extraction) return
@@ -320,13 +453,7 @@ function Results({
       {candidates.length > 0 && (
         <section>
           <h2>Fiches Numista proposées</h2>
-          <ul className="candidates">
-            {candidates.map((c) => (
-              <li key={c.id}>
-                <CandidateCard candidate={c} onChoose={() => onChoose(c)} />
-              </li>
-            ))}
-          </ul>
+          <CandidateList candidates={candidates} onChoose={onChoose} />
         </section>
       )}
 
@@ -408,13 +535,7 @@ function ManualSearch({
       <ErrorMessage message={error} />
       {results && results.length === 0 && <p className="empty">Aucun résultat.</p>}
       {results && results.length > 0 && (
-        <ul className="candidates">
-          {results.map((c) => (
-            <li key={c.id}>
-              <CandidateCard candidate={c} onChoose={() => onChoose(c)} />
-            </li>
-          ))}
-        </ul>
+        <CandidateList candidates={results} onChoose={onChoose} />
       )}
       <div className="actions vertical">
         <button className="btn" onClick={onFreeEntry}>
@@ -425,5 +546,66 @@ function ManualSearch({
         </button>
       </div>
     </>
+  )
+}
+
+/** Même fiche Numista déjà dans la collection : proposer +1 exemplaire plutôt qu'un nouvel objet.
+ *  Une fiche couvre souvent plusieurs années : l'année identique est mise en avant. */
+function Duplicates({
+  numistaId,
+  year,
+  onAddCopy,
+}: {
+  numistaId: number
+  year: number | null
+  onAddCopy: (item: OwnedItem) => Promise<void>
+}) {
+  const items = useOwned([numistaId])[numistaId] ?? []
+  const [busy, setBusy] = useState<number | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  if (!items.length) return null
+
+  async function add(item: OwnedItem) {
+    setBusy(item.id)
+    setError(null)
+    try {
+      await onAddCopy(item)
+    } catch (e) {
+      setError((e as Error).message)
+      setBusy(null)
+    }
+  }
+
+  const sameYear = items.some((i) => year != null && i.year === year)
+  return (
+    <section className="panel duplicates">
+      <h2>Déjà dans ta collection</h2>
+      <p className="muted small">
+        {sameYear
+          ? 'Même fiche et même année : sans doute un exemplaire de plus.'
+          : year == null
+            ? 'Même fiche Numista (une fiche couvre souvent plusieurs années) : vérifie l\'année avant d\'ajouter un exemplaire.'
+            : 'Même fiche Numista, mais pas la même année : vérifie avant d\'ajouter un exemplaire.'}
+      </p>
+      <ul className="owned">
+        {items.map((item) => {
+          const details = [item.year ?? 'année ?', item.mint_mark, item.condition, `×${item.quantity}`]
+          return (
+            <li key={item.id} className={year != null && item.year === year ? 'same' : ''}>
+              {item.thumb_url ? <img src={item.thumb_url} alt="" /> : <div className="no-photo small" aria-hidden>◎</div>}
+              <span className="grow">
+                <Link to={`/objet/${item.id}`}>{item.denomination ?? `Objet ${item.id}`}</Link>
+                <span className="muted small block">{details.filter(Boolean).join(' · ')}</span>
+              </span>
+              <button className="btn small primary" disabled={busy != null} onClick={() => add(item)}>
+                {busy === item.id ? '…' : '+1 exemplaire'}
+              </button>
+            </li>
+          )
+        })}
+      </ul>
+      <ErrorMessage message={error} />
+      <p className="muted small">Ou bien enregistre-le comme un nouvel objet ci-dessous (autre année, autre état…).</p>
+    </section>
   )
 }

@@ -91,6 +91,19 @@ class Candidate:
     obverse_thumbnail: str | None
     reverse_thumbnail: str | None
 
+    @classmethod
+    def from_type(cls, t: dict) -> "Candidate":
+        """Depuis un élément de la réponse Numista GET /types."""
+        return cls(
+            id=t["id"],
+            title=t["title"],
+            issuer=(t.get("issuer") or {}).get("name"),
+            min_year=t.get("min_year"),
+            max_year=t.get("max_year"),
+            obverse_thumbnail=t.get("obverse_thumbnail"),
+            reverse_thumbnail=t.get("reverse_thumbnail"),
+        )
+
     @property
     def url(self) -> str:
         return type_url(self.id)
@@ -99,7 +112,9 @@ class Candidate:
     def years(self) -> str:
         if self.min_year is None:
             return "?"
-        return str(self.min_year) if self.min_year == self.max_year else f"{self.min_year}-{self.max_year}"
+        if self.max_year is None or self.min_year == self.max_year:
+            return str(self.min_year)
+        return f"{self.min_year}-{self.max_year}"
 
 
 @dataclass
@@ -168,17 +183,6 @@ async def find_candidates(
         data = await client.search_types(count=TOP_N, **params)
         result.queries.append({**params, "results": data.get("count", 0)})
         if data.get("types"):
-            result.candidates = [
-                Candidate(
-                    id=t["id"],
-                    title=t["title"],
-                    issuer=(t.get("issuer") or {}).get("name"),
-                    min_year=t.get("min_year"),
-                    max_year=t.get("max_year"),
-                    obverse_thumbnail=t.get("obverse_thumbnail"),
-                    reverse_thumbnail=t.get("reverse_thumbnail"),
-                )
-                for t in data["types"][:TOP_N]
-            ]
+            result.candidates = [Candidate.from_type(t) for t in data["types"][:TOP_N]]
             break
     return result

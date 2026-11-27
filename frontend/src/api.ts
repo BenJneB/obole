@@ -39,6 +39,7 @@ export interface Item extends ItemFields {
   updated_at: string
   ai_extraction: Extraction | null
   photos: Photo[]
+  thumb_url: string | null // miniature principale (avers de préférence), calculée par le serveur
 }
 
 export interface ItemList {
@@ -110,7 +111,41 @@ export interface Stats {
   countries: number
   by_type: Record<string, number>
   by_country: Record<string, number>
+  by_year: Record<string, number>
+  without_year: number
+  by_condition: Record<string, number>
+  by_tag: Record<string, number>
+  identified: number
   estimated_value_total: number
+  acquired_price_total: number
+}
+
+export interface TagCount {
+  tag: string
+  count: number
+}
+
+/** Objet déjà présent pour une fiche Numista (GET /api/items/owned). */
+export interface OwnedItem {
+  id: number
+  year: number | null
+  mint_mark: string | null
+  condition: string | null
+  quantity: number
+  denomination: string | null
+  country: string | null
+  thumb_url: string | null
+}
+
+export interface BackupStatus {
+  enabled: boolean
+  interval_hours: number
+  keep: number
+  directory: string
+  last_run_at: string | null
+  last_status: 'created' | 'unchanged' | 'error' | null
+  last_error: string | null
+  backups: { name: string; created_at: string; size: number }[]
 }
 
 export interface Health {
@@ -120,43 +155,22 @@ export interface Health {
   schema_version: number
 }
 
-/** Réponse brute de GET /api/numista/search (format Numista). */
-interface NumistaSearch {
-  count: number
-  types: {
-    id: number
-    title: string
-    issuer?: { name?: string }
-    min_year?: number | null
-    max_year?: number | null
-    obverse_thumbnail?: string | null
-    reverse_thumbnail?: string | null
-  }[]
-}
-
-export class ApiError extends Error {
-  status: number
-  constructor(status: number, message: string) {
-    super(message)
-    this.status = status
-  }
-}
-
 const UNREACHABLE = 'Serveur injoignable : le PC est-il allumé, et Tailscale connecté sur le téléphone ?'
 
-async function errorMessage(response: Response): Promise<string> {
-  try {
-    const body = await response.json()
-    const detail = body?.detail
-    if (typeof detail === 'string') return detail
-    if (Array.isArray(detail)) {
-      // Erreur de validation FastAPI : [{loc: [...], msg: "..."}]
-      return detail.map((d) => `${(d.loc ?? []).slice(1).join('.')} : ${d.msg}`).join(' ; ')
-    }
-  } catch {
-    // corps non JSON
+/** Message lisible à partir du corps JSON d'une réponse d'erreur FastAPI. */
+function detailMessage(body: unknown, status: number): string {
+  const detail = (body as { detail?: unknown } | null)?.detail
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    // Erreur de validation FastAPI : [{loc: [...], msg: "..."}]
+    return detail.map((d) => `${(d.loc ?? []).slice(1).join('.')} : ${d.msg}`).join(' ; ')
   }
-  return `Erreur du serveur (HTTP ${response.status})`
+  return `Erreur du serveur (HTTP ${status})`
+}
+
+async function errorMessage(response: Response): Promise<string> {
+  const body = await response.json().catch(() => null) // corps non JSON
+  return detailMessage(body, response.status)
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -164,9 +178,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     response = await fetch(path, init)
   } catch {
-    throw new ApiError(0, UNREACHABLE)
+    throw new Error(UNREACHABLE)
   }
-  if (!response.ok) throw new ApiError(response.status, await errorMessage(response))
+  if (!response.ok) throw new Error(await errorMessage(response))
   if (response.status === 204) return undefined as T
   return (await response.json()) as T
 }
@@ -180,24 +194,25 @@ export type ItemCreate = Partial<ItemFields> & {
   ai_extraction?: Extraction | null
 }
 
-export interface ItemQuery {
-  q?: string
-  country?: string
-  object_type?: string
-  sort?: string
-}
-
 export const api = {
-  listItems(query: ItemQuery): Promise<ItemList> {
-    const params = new URLSearchParams()
-    for (const [key, value] of Object.entries(query)) if (value) params.set(key, value)
+  /** `query` : paramètres de GET /api/items (q, country, sort, tag…), déjà encodés. */
+  listItems(query: string, signal?: AbortSignal): Promise<ItemList> {
+    const params = new URLSearchParams(query)
     params.set('limit', '1000')
-    return request(`/api/items?${params}`)
+    return request(`/api/items?${params}`, { signal })
   },
   getItem: (id: number) => request<Item>(`/api/items/${id}`),
   createItem: (body: ItemCreate) => request<Item>('/api/items', json('POST', body)),
   updateItem: (id: number, body: Partial<ItemFields>) => request<Item>(`/api/items/${id}`, json('PATCH', body)),
   deleteItem: (id: number) => request<void>(`/api/items/${id}`, { method: 'DELETE' }),
+  incrementItem: (id: number, discardUploadId: string | null) =>
+    request<Item>(`/api/items/${id}/increment`, json('POST', { by: 1, discard_upload_id: discardUploadId })),
+  async owned(numistaIds: number[]): Promise<Record<number, OwnedItem[]>> {
+    const ids = [...new Set(numistaIds)].slice(0, 100)
+    if (!ids.length) return {}
+    return request(`/api/items/owned?numista_ids=${ids.join(',')}`)
+  },
+  tags: () => request<TagCount[]>('/api/tags'),
   addPhoto(itemId: number, file: File, side: PhotoSide): Promise<Photo> {
     const form = new FormData()
     form.append('file', file)
@@ -207,27 +222,15 @@ export const api = {
   deletePhoto: (itemId: number, photoId: number) =>
     request<void>(`/api/items/${itemId}/photos/${photoId}`, { method: 'DELETE' }),
   rematch: (extraction: Extraction) => request<MatchResponse>('/api/match', json('POST', { extraction })),
-  async searchNumista(q: string, objectType?: ObjectType): Promise<Candidate[]> {
+  searchNumista(q: string, objectType?: ObjectType): Promise<Candidate[]> {
     const params = new URLSearchParams({ q, count: '20' })
     if (objectType && objectType !== 'unknown') params.set('object_type', objectType)
-    const data = await request<NumistaSearch>(`/api/numista/search?${params}`)
-    return data.types.map((t) => ({
-      id: t.id,
-      title: t.title,
-      issuer: t.issuer?.name ?? null,
-      years: formatYears(t.min_year, t.max_year),
-      url: `https://fr.numista.com/${t.id}`,
-      obverse_thumbnail: t.obverse_thumbnail ?? null,
-      reverse_thumbnail: t.reverse_thumbnail ?? null,
-    }))
+    return request(`/api/numista/search?${params}`) // même format que les candidats de /identify
   },
   stats: () => request<Stats>('/api/stats'),
   health: () => request<Health>('/api/health'),
-}
-
-function formatYears(min?: number | null, max?: number | null): string {
-  if (min == null) return '?'
-  return min === max || max == null ? String(min) : `${min}-${max}`
+  backups: () => request<BackupStatus>('/api/backups'),
+  backupNow: () => request<BackupStatus>('/api/backups', { method: 'POST' }),
 }
 
 export type IdentifyProgress = { phase: 'upload'; ratio: number } | { phase: 'analysis' }
@@ -251,11 +254,10 @@ export function identify(
     xhr.upload.onload = () => onProgress({ phase: 'analysis' })
     xhr.onload = () => {
       if (xhr.status === 200) return resolve(xhr.response as IdentifyResponse)
-      const detail = xhr.response?.detail
-      reject(new ApiError(xhr.status, typeof detail === 'string' ? detail : `Erreur du serveur (HTTP ${xhr.status})`))
+      reject(new Error(detailMessage(xhr.response, xhr.status)))
     }
-    xhr.onerror = () => reject(new ApiError(0, UNREACHABLE))
-    xhr.onabort = () => reject(new ApiError(-1, 'Identification annulée'))
+    xhr.onerror = () => reject(new Error(UNREACHABLE))
+    xhr.onabort = () => reject(new Error('Identification annulée'))
     xhr.send(form)
   })
   return { promise, abort: () => xhr.abort() }

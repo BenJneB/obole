@@ -168,6 +168,7 @@ def settings(data_dir: Path) -> Settings:
         numista_base_url=NUMISTA_URL,
         numista_monthly_quota=2000,
         frontend_dist=data_dir.parent / "dist",  # absent par défaut : tests de l'API seule
+        backup_interval_hours=0,  # pas de sauvegarde planifiée pendant les tests (testée à part)
     )
 
 
@@ -213,3 +214,21 @@ def make_image(color=(200, 150, 50), size=(640, 480), fmt="JPEG") -> bytes:
 @pytest.fixture
 def jpeg() -> bytes:
     return make_image()
+
+
+# --- helpers des tests d'API ----------------------------------------------------------------
+
+
+def identify(client, jpeg, reverse=True):
+    files = {"obverse": ("avers.jpg", jpeg, "image/jpeg")}
+    if reverse:
+        files["reverse"] = ("revers.jpg", make_image((10, 20, 30)), "image/jpeg")
+    response = client.post("/api/identify", files=files)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def create(client, **fields):
+    response = client.post("/api/items", json={"country": "France", "denomination": "2 euro", **fields})
+    assert response.status_code == 201, response.text
+    return response.json()

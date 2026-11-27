@@ -129,7 +129,10 @@ class NumistaClient:
         if response.status_code != 200:
             raise NumistaError(f"Numista : HTTP {response.status_code} ({_error_message(response)})")
 
-        data = response.json()
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise NumistaError(f"Numista : réponse illisible ({response.text[:200]})") from exc
         self._cache_put(key, data)
         return data
 

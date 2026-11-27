@@ -119,9 +119,8 @@ async def cmd_search(args) -> int:
     data = await client.search_types(args.search, issuer=args.issuer, date=args.year, count=args.count,
                                      object_type=object_type)
     print(f"{data.get('count', 0)} résultat(s) pour {args.search!r}")
-    for t in data.get("types", []):
-        years = f"{t.get('min_year')}-{t.get('max_year')}"
-        print(f"  {t['id']:>7}  {years:<10} {t['title']}  ({(t.get('issuer') or {}).get('name')})")
+    for c in map(matching.Candidate.from_type, data.get("types", [])):
+        print(f"  {c.id:>7}  {c.years:<10} {c.title}  ({c.issuer})")
     print(f"(requêtes Numista ce mois-ci : {client.used_this_month()})")
     return 0
 

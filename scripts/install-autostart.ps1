@@ -30,8 +30,6 @@ param(
 $ErrorActionPreference = "Continue"
 . "$PSScriptRoot\common.ps1"
 
-$startScript = Join-Path $PSScriptRoot "start-server.ps1"
-$arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$startScript`" -Background"
 $user = "$env:USERDOMAIN\$env:USERNAME"
 
 if ($Remove) {
@@ -49,9 +47,8 @@ if ($Remove) {
 }
 
 Write-Step "Demarrage automatique du serveur a l'ouverture de session ($user)"
-$installed = $null
 try {
-    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $arguments -WorkingDirectory $RepoRoot
+    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $BackgroundArguments -WorkingDirectory $RepoRoot
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
     $trigger.Delay = "PT30S"  # laisser Ollama et Tailscale demarrer
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
@@ -61,7 +58,6 @@ try {
         -Principal $principal -Description "Serveur Obole (collection de pieces et billets)" -Force `
         -ErrorAction Stop | Out-Null
     Write-Ok "Tache planifiee '$TaskName' creee (visible dans le Planificateur de taches)"
-    $installed = "task"
     if (Test-Path $StartupShortcut) { Remove-Item $StartupShortcut -Force }  # pas de double lancement
 } catch {
     Write-Warn "Tache planifiee impossible : $($_.Exception.Message)"
@@ -70,13 +66,12 @@ try {
         $shell = New-Object -ComObject WScript.Shell
         $link = $shell.CreateShortcut($StartupShortcut)
         $link.TargetPath = "powershell.exe"
-        $link.Arguments = $arguments
+        $link.Arguments = $BackgroundArguments
         $link.WorkingDirectory = $RepoRoot
         $link.WindowStyle = 7  # reduite
         $link.Description = "Serveur Obole"
         $link.Save()
         Write-Ok "Raccourci cree : $StartupShortcut"
-        $installed = "shortcut"
     } catch {
         Write-Fail "Raccourci impossible : $($_.Exception.Message)"
         exit 1
@@ -93,12 +88,7 @@ if (Get-ListeningProcessId $port) {
     exit 0
 }
 Write-Step "Lancement du serveur maintenant"
-if ($installed -eq "task") {
-    Start-ScheduledTask -TaskName $TaskName
-} else {
-    Start-Process powershell.exe -WindowStyle Hidden -ArgumentList @(
-        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$startScript`"", "-Background")
-}
+Start-OboleServer -Background | Out-Null
 $health = Wait-OboleHealth $port
 if ($health) {
     Write-Ok "Serveur en ligne : http://127.0.0.1:$port (IA : $(if ($health.ollama.ok) { 'prete' } else { 'indisponible' }))"

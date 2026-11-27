@@ -5,6 +5,9 @@
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $TaskName = "Obole - serveur"
 $StartupShortcut = Join-Path ([Environment]::GetFolderPath("Startup")) "Obole - serveur.lnk"
+$StartScript = Join-Path $PSScriptRoot "start-server.ps1"
+# Lancement du serveur en arriere-plan (tache planifiee, raccourci de demarrage, relance)
+$BackgroundArguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$StartScript`" -Background"
 
 function Write-Step([string]$Text) { Write-Host ""; Write-Host "==> $Text" -ForegroundColor Cyan }
 function Write-Info([string]$Text) { Write-Host "    $Text" }
@@ -117,6 +120,22 @@ function Stop-OboleServer([int]$Port) {
     # Attendre que le port soit libere
     for ($i = 0; $i -lt 20 -and (Get-ListeningProcessId $Port); $i++) { Start-Sleep -Milliseconds 500 }
     return $stopped
+}
+
+function Start-OboleServer([switch]$Background) {
+    # Lance le serveur : via la tache planifiee si elle existe, sinon en arriere-plan
+    # (-Background), sinon dans une nouvelle fenetre a laisser ouverte.
+    # Renvoie "task", "background" ou "window".
+    if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+        Start-ScheduledTask -TaskName $TaskName
+        return "task"
+    }
+    if ($Background) {
+        Start-Process powershell.exe -WindowStyle Hidden -ArgumentList $BackgroundArguments
+        return "background"
+    }
+    Start-Process powershell.exe -ArgumentList "-NoProfile -NoExit -ExecutionPolicy Bypass -File `"$StartScript`""
+    return "window"
 }
 
 function Wait-OboleHealth([int]$Port, [int]$TimeoutSeconds = 90) {

@@ -1,0 +1,24 @@
+[project]
+name = "obole-backend"
+version = "0.1.0"
+description = "Obole : collection de pièces et billets avec identification par photo"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.29.0",
+    "pillow>=13.0.0",
+    "pydantic-settings>=2.16.3",
+    "rapidfuzz>=3.14.6",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "ruff>=0.17.6",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

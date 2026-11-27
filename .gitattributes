@@ -1,0 +1,15 @@
+# Normalisation des fins de ligne (dev sous Ubuntu, serveur sous Windows)
+* text=auto
+
+# Scripts : fins de ligne imposées par le système qui les exécute
+*.sh   text eol=lf
+*.ps1  text eol=crlf
+
+# Binaires
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.webp binary
+*.ico  binary
+*.zip  binary
+*.sqlite binary

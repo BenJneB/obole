@@ -1,0 +1,40 @@
+"""Configuration de l'application, lue depuis le fichier .env à la racine du dépôt."""
+
+from functools import lru_cache
+from pathlib import Path
+
+from pydantic import SecretStr
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# backend/app/config.py -> racine du dépôt = 2 niveaux au-dessus de backend/app
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=REPO_ROOT / ".env", env_file_encoding="utf-8", extra="ignore"
+    )
+
+    host: str = "127.0.0.1"
+    port: int = 8000
+    data_dir: Path = Path("./data")
+
+    ollama_url: str = "http://localhost:11434"
+    vision_model: str = "gemma4:e4b"
+    # Taille du contexte du modèle (tokens). Deux images à 768 px en consomment ~1 800.
+    # 8192 fait déborder qwen2.5vl:7b de la VRAM (8 Go) sur le CPU : beaucoup plus lent.
+    vision_num_ctx: int = 4096
+
+    numista_api_key: SecretStr = SecretStr("")
+    numista_base_url: str = "https://api.numista.com/v3"
+    numista_monthly_quota: int = 2000
+
+    @property
+    def data_path(self) -> Path:
+        """DATA_DIR résolu : relatif à la racine du dépôt s'il n'est pas absolu."""
+        return self.data_dir if self.data_dir.is_absolute() else (REPO_ROOT / self.data_dir).resolve()
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

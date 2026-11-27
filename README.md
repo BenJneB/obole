@@ -10,7 +10,7 @@ Téléphone (PWA, Chrome)  ──HTTPS Tailscale──▶  PC Windows : serveur 
                                                          └──▶ SQLite + photos (data/)
 ```
 
-> **État du projet :** seule l'**étape préliminaire** est faite (scripts d'installation et ce README). Les sections marquées 🚧 décrivent des commandes qui arriveront avec les phases suivantes (POC, backend, PWA).
+> **État du projet :** étape préliminaire, POC (Phase 0) et **backend (Phase 1)** faits : l'API fonctionne, mais il n'y a pas encore d'interface pour le téléphone. Les sections marquées 🚧 décrivent des commandes qui arriveront avec la Phase 2 (PWA).
 
 ## Sommaire
 
@@ -19,7 +19,7 @@ Téléphone (PWA, Chrome)  ──HTTPS Tailscale──▶  PC Windows : serveur 
 3. [Partie A : poste de développement Ubuntu](#partie-a--poste-de-développement-ubuntu)
 4. [Partie B : serveur Windows 11](#partie-b--serveur-windows-11)
 5. [Choix du modèle d'IA](#5-choix-du-modèle-dia)
-6. [Lancer l'application](#6-lancer-lapplication-)
+6. [Lancer l'application](#6-lancer-lapplication)
 7. [Installer l'appli sur le téléphone Android](#7-installer-lappli-sur-le-téléphone-android-)
 8. [Mettre à jour le serveur](#8-mettre-à-jour-le-serveur-)
 9. [Sauvegarder ses données](#9-sauvegarder-ses-données)
@@ -278,7 +278,7 @@ ollama rm gemma4:e4b           # (optionnel) libérer de la place
 
 ## 5 bis. Tester l'identification en ligne de commande (POC)
 
-Le script `scripts/poc_identify.py` teste toute la chaîne (photo → modèle → Numista) sans interface. Il **n'ajoute rien à la collection** : il lit les photos et n'écrit que dans `data/cache/` (cache Numista et compteur de quota) et `data/poc-results/`.
+Le script `scripts/poc_identify.py` teste toute la chaîne (photo → modèle → Numista) sans interface. Il **n'ajoute rien à la collection** : il lit les photos et n'écrit que dans le cache Numista (base `data/obole.sqlite3`, partagé avec le serveur) et `data/poc-results/`.
 
 À lancer depuis la racine du dépôt, après avoir renseigné `OLLAMA_URL` et `NUMISTA_API_KEY` dans `.env` :
 
@@ -298,18 +298,42 @@ uv run --project backend python scripts/poc_identify.py --bench --models gemma4:
 
 **Photos de test** : `data/test-photos/NN_avers.jpg` et `NN_revers.jpg`. Le fichier `attendu.csv` (colonnes `id,object_type,numista_id,description,photos`) donne la bonne réponse de chaque objet ; le banc d'essai calcule combien sont trouvés dans les 5 premiers candidats et le temps moyen. Le détail de chaque passage est enregistré dans `data/poc-results/bench-<date>.csv`.
 
-**Quota Numista** : chaque réponse est gardée en cache 90 jours (`data/cache/numista/`). Relancer le même test ne consomme donc presque rien. Le compteur du mois est dans `data/cache/numista_usage.json`.
+**Quota Numista** : chaque réponse est gardée en cache 90 jours (table `numista_cache` de la base SQLite). Relancer le même test ne consomme donc presque rien. Le compteur du mois (table `api_usage`) est visible via `/api/health`. L'ancien cache fichier du POC (`data/cache/`) a été repris automatiquement dans la base au premier lancement ; ce dossier peut être supprimé.
 
 ---
 
-## 6. Lancer l'application 🚧
+## 6. Lancer l'application
 
-> Disponible à partir des phases 1 (backend) et 2 (PWA).
+> Backend disponible (Phase 1). L'interface pour le téléphone (PWA) et les scripts Windows `start-server.ps1` / `install-autostart.ps1` arrivent en Phase 2 🚧.
 
 **En développement (Ubuntu) :**
 ```bash
-./scripts/dev.sh               # backend (rechargement auto) + frontend Vite
+./scripts/dev.sh               # backend avec rechargement automatique (port 8000 ; autre port : ./scripts/dev.sh 8001)
 ```
+Ouvre ensuite <http://127.0.0.1:8000/docs> : c'est la **documentation interactive de l'API**, où chaque route peut être essayée depuis le navigateur (bouton *Try it out*). Par exemple `POST /api/identify` avec une photo, puis `POST /api/items` avec l'`upload_id` reçu pour enregistrer l'objet.
+
+**Ce que fait l'API :**
+
+| Route | Rôle |
+|---|---|
+| `POST /api/identify` | 1 ou 2 photos (avers, revers) → lecture par le modèle + 5 candidats Numista. Répond toujours avec ce qui a pu être obtenu ; en cas d'échec, `errors` explique pourquoi et les photos restent utilisables (`upload_id`, gardé 24 h) |
+| `POST /api/items` | Enregistre un objet ; avec `upload_id`, les photos de l'identification y sont rattachées |
+| `GET /api/items` | Liste, avec recherche (`q`), filtres (`country`, `object_type`, `year`, `year_min`, `year_max`) et tri (`sort=-year`…) |
+| `GET` / `PUT` / `DELETE /api/items/{id}` | Lire / modifier (seuls les champs envoyés changent) / supprimer (photos comprises) |
+| `POST /api/items/{id}/photos` | Ajouter une photo à la main |
+| `GET /api/numista/search`, `/api/numista/types/{id}` | Recherche manuelle et détail d'une fiche (via le cache) |
+| `GET /api/export.csv`, `/api/export.json`, `/api/backup.zip` | Exports et sauvegarde complète |
+| `GET /api/health`, `/api/stats` | État d'Ollama et quota Numista ; statistiques de la collection |
+
+**Base de données :** `data/obole.sqlite3`, créée et mise à jour automatiquement au démarrage (migrations). Les photos sont dans `data/photos/<id de l'objet>/`, originaux conservés tels quels + miniatures.
+
+**Tests et vérifications (à lancer avant de pousser) :**
+```bash
+cd backend
+uv run ruff check . ../scripts   # style et erreurs courantes
+uv run pytest                    # tests : Ollama et Numista sont simulés (ni GPU, ni réseau, ni quota)
+```
+Les mêmes vérifications tournent automatiquement sur GitHub à chaque **pull request** (onglet **Actions** du dépôt, ou bouton *Run workflow* pour les lancer à la main), sous **Ubuntu et Windows**, avec en plus l'analyse des scripts `.sh` (shellcheck) et `.ps1` (syntaxe, PSScriptAnalyzer, caractères ASCII). Une croix rouge sur un commit signale un problème : clique dessus pour voir le détail.
 
 **En production (Windows) :**
 ```powershell
@@ -361,8 +385,8 @@ Si une nouvelle dépendance système apparaît, les scripts `setup-*` et ce READ
 Toutes tes données sont dans le dossier **`data/`** (base SQLite et photos), réglable via `DATA_DIR`. Ce dossier n'est **pas** sur GitHub.
 
 - **Méthode simple, disponible dès maintenant :** arrête le serveur, puis copie tout le dossier `data/` sur une clé USB ou un cloud personnel.
-- 🚧 **Depuis l'appli :** *Réglages*, puis *Sauvegarde*, qui télécharge `backup.zip` (base et photos) via `/api/backup.zip`. Exports lisibles : `/api/export.csv` et `/api/export.json`.
-- **Restaurer :** remettre le dossier `data/` en place (serveur arrêté).
+- **Sans arrêter le serveur :** ouvre <http://127.0.0.1:8000/api/backup.zip> sur le PC : il télécharge `obole-backup-<date>.zip` (copie cohérente de la base + toutes les photos). Exports lisibles : `/api/export.csv` (s'ouvre dans Excel) et `/api/export.json`. 🚧 En Phase 2 : bouton *Sauvegarde* dans les *Réglages* de l'appli.
+- **Restaurer :** serveur arrêté, remettre le dossier `data/` en place (ou extraire `backup.zip` dans `data/`).
 
 ---
 

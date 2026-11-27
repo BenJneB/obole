@@ -111,25 +111,42 @@ class MatchResult:
     candidates: list[Candidate] = field(default_factory=list)
 
 
+def design_keywords(extraction: dict, issuer_code: str | None) -> list[str]:
+    """Mots-clés qui décrivent le motif : sans le pays (déjà filtré) ni la valeur faciale."""
+    country = (extraction.get("country") or "").strip().lower()
+    denomination = (extraction.get("denomination_text") or "").strip().lower()
+    currency = (extraction.get("currency") or "").strip().lower()
+    kept = []
+    for keyword in extraction.get("search_keywords") or []:
+        k = (keyword or "").strip()
+        low = k.lower()
+        if not k or (issuer_code and low == country) or low in (denomination, currency):
+            continue
+        if denomination and (low in denomination or denomination in low):
+            continue
+        kept.append(k)
+    return kept
+
+
 def build_queries(extraction: dict, issuer_code: str | None, object_type: int | None) -> list[dict]:
     """Requêtes de la plus précise à la plus large (dédupliquées, MAX_SEARCHES au plus)."""
     denomination = (extraction.get("denomination_text") or "").strip() or None
-    keywords = [k for k in extraction.get("search_keywords") or [] if k and k.strip()]
+    design = design_keywords(extraction, issuer_code)
     year = extraction.get("year")
     date = str(year) if isinstance(year, int) and extraction.get("year_visible") else None
 
     base = {"issuer": issuer_code, "object_type": object_type}
     queries = []
+    if denomination and design and extraction.get("is_commemorative_guess"):
+        # Commémorative : beaucoup de types partagent valeur et année (ex. 10 euro allemands 2008) ;
+        # le sujet commémoré est ce qui les distingue
+        queries.append({**base, "q": f"{denomination} {design[0]}", "date": date})
     if denomination:
         if date:
             queries.append({**base, "q": denomination, "date": date})
         queries.append({**base, "q": denomination})
-    if keywords:
-        # Les mots-clés reprennent souvent le pays : inutile de les mettre si l'émetteur est filtré
-        country = (extraction.get("country") or "").lower()
-        kept = [k for k in keywords if not issuer_code or k.lower() != country][:3]
-        if kept:
-            queries.append({**base, "q": " ".join(kept)})
+    if design:
+        queries.append({**base, "q": " ".join(design[:3])})
     if issuer_code and denomination:
         # Dernier recours : sans filtre émetteur (le pays a pu être mal reconnu)
         queries.append({"object_type": object_type, "q": denomination, "date": date})

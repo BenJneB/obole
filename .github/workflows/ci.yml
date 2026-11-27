@@ -1,0 +1,93 @@
+# Intégration continue : à chaque pull request (et à la demande depuis l'onglet Actions).
+# - backend : ruff + pytest sous Ubuntu ET Windows (le serveur tourne sous Windows 11).
+#   Les tests simulent Ollama et Numista : ni GPU, ni réseau, ni clé API nécessaires.
+# - scripts : shellcheck (.sh), analyse PowerShell (.ps1, ASCII obligatoire pour PowerShell 5.1),
+#   marqueurs de conflit Git oubliés.
+# Le frontend (lint, tsc, build) sera ajouté en Phase 2.
+name: CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+# Un nouveau push sur la branche de la PR annule l'exécution précédente (économie de minutes)
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Installer uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Installer Python et les dépendances (versions figées par uv.lock)
+        run: uv sync --locked
+
+      - name: Ruff
+        run: uv run ruff check . ../scripts
+
+      - name: Pytest
+        run: uv run pytest
+
+  scripts:
+    name: Scripts et dépôt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Shellcheck
+        run: shellcheck scripts/*.sh
+
+      - name: PowerShell en ASCII (PowerShell 5.1 lit mal l'UTF-8 sans BOM)
+        run: |
+          if LC_ALL=C grep -nP '[^\x00-\x7F]' scripts/*.ps1; then
+            echo "::error::Caracteres non ASCII dans un script PowerShell (voir ci-dessus)"
+            exit 1
+          fi
+
+      - name: PowerShell - syntaxe et PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($file in Get-ChildItem scripts -Filter *.ps1) {
+            $tokens = $null; $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            foreach ($e in $errors) {
+              Write-Output "::error file=scripts/$($file.Name),line=$($e.Extent.StartLineNumber)::$($e.Message)"
+              $failed = $true
+            }
+          }
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          $issues = Invoke-ScriptAnalyzer -Path scripts -Recurse -Severity Error
+          foreach ($i in $issues) {
+            Write-Output "::error file=scripts/$($i.ScriptName),line=$($i.Line)::$($i.RuleName): $($i.Message)"
+            $failed = $true
+          }
+          if ($failed) { exit 1 }
+
+      - name: Marqueurs de conflit Git oubliés
+        run: |
+          if git grep -nE '^(<{7}|>{7})( |$)|^={7}$' -- . ':!*.lock'; then
+            echo "::error::Marqueurs de conflit Git trouvés (voir ci-dessus)"
+            exit 1
+          fi

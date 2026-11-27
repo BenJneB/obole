@@ -4,10 +4,14 @@ version = "0.1.0"
 description = "Obole : collection de pièces et billets avec identification par photo"
 requires-python = ">=3.12"
 dependencies = [
+    "fastapi>=0.165.0",
     "httpx>=0.29.0",
     "pillow>=13.0.0",
     "pydantic-settings>=2.16.3",
+    "python-multipart>=0.0.34",
     "rapidfuzz>=3.14.6",
+    "sqlmodel>=0.0.50",
+    "uvicorn>=0.54.0",
 ]
 
 [dependency-groups]
@@ -22,3 +26,12 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+filterwarnings = [
+    "error::sqlalchemy.exc.SAWarning",  # un avertissement SQLAlchemy cache souvent un vrai bug
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated",
+]

@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     numista_base_url: str = "https://api.numista.com/v3"
     numista_monthly_quota: int = 2000
 
+    # Frontend compilé (npm run build) servi par FastAPI ; ignoré s'il n'existe pas
+    frontend_dist: Path = REPO_ROOT / "frontend" / "dist"
+
     @property
     def data_path(self) -> Path:
         """DATA_DIR résolu : relatif à la racine du dépôt s'il n'est pas absolu."""

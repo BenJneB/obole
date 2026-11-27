@@ -3,7 +3,7 @@
 import httpx
 from fastapi import APIRouter
 from sqlalchemy import func
-from sqlmodel import select
+from sqlmodel import col, select
 
 from ..db import MIGRATIONS
 from ..deps import SessionDep, StateDep
@@ -56,7 +56,14 @@ def stats(session: SessionDep) -> Stats:
     by_type = dict(
         session.exec(select(Item.object_type, func.count(Item.id)).group_by(Item.object_type)).all()
     )
+    by_country = session.exec(
+        select(Item.country, func.count(Item.id))
+        .where(col(Item.country).is_not(None), Item.country != "")
+        .group_by(func.lower(Item.country))
+        .order_by(func.count(Item.id).desc(), func.lower(Item.country))
+    ).all()
     return Stats(
         items=count, total_quantity=quantity, countries=countries,
-        by_type={str(k): v for k, v in by_type.items()}, estimated_value_total=round(value, 2),
+        by_type={str(k): v for k, v in by_type.items()}, by_country=dict(by_country),
+        estimated_value_total=round(value, 2),
     )

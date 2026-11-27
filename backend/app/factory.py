@@ -10,6 +10,7 @@ from . import storage
 from .config import Settings, get_settings
 from .db import init_db, make_engine
 from .deps import AppState
+from .frontend import mount_frontend
 from .routes import export, identify, items, numista, system
 from .services.numista import NumistaClient
 
@@ -52,4 +53,7 @@ def create_app(
     app.state.obole = state
     for module in (identify, items, numista, export, system):
         app.include_router(module.router, prefix="/api")
+    # En dernier : la route « attrape-tout » du frontend ne doit pas masquer l'API
+    if not mount_frontend(app, settings.frontend_dist):
+        log.warning("Frontend absent (%s) : lancer « npm run build » dans frontend/", settings.frontend_dist)
     return app

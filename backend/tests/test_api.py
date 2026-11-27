@@ -271,7 +271,8 @@ def test_stats(client):
     stats = client.get("/api/stats").json()
     assert stats == {
         "items": 3, "total_quantity": 4, "countries": 2,
-        "by_type": {"coin": 2, "banknote": 1}, "estimated_value_total": 6.0,
+        "by_type": {"coin": 2, "banknote": 1}, "by_country": {"France": 2, "Japan": 1},
+        "estimated_value_total": 6.0,
     }
 
 
@@ -308,3 +309,46 @@ def test_expired_uploads_are_purged(client, jpeg, data_dir):
     assert json.loads(client.post("/api/items", json={"upload_id": upload_id}).text)["detail"].startswith(
         "Photos introuvables"
     )
+
+
+# --- frontend compilé ---------------------------------------------------------------------------------
+
+
+def test_frontend_is_served(settings, fake_numista, fake_ollama):
+    from fastapi.testclient import TestClient
+
+    from app.factory import create_app
+
+    dist = settings.frontend_dist
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<html>Obole</html>", encoding="utf-8")
+    (dist / "assets" / "app-abc123.js").write_text("console.log(1)", encoding="utf-8")
+    (dist / "sw.js").write_text("// sw", encoding="utf-8")
+    app = create_app(settings, numista_transport=fake_numista.transport,
+                     ollama_transport=fake_ollama.transport)
+    with TestClient(app) as client:
+        assert client.get("/").text == "<html>Obole</html>"
+        assert client.get("/objet/12").text == "<html>Obole</html>"  # route React
+        asset = client.get("/assets/app-abc123.js")
+        assert "immutable" in asset.headers["cache-control"]
+        assert client.get("/sw.js").headers["cache-control"] == "no-cache"
+        assert client.get("/manque.png").status_code == 404
+        assert client.get("/api/inconnue").status_code == 404
+        assert client.get("/api/items").json()["total"] == 0  # l'API n'est pas masquée
+        assert client.get("/../../etc/passwd").status_code in (200, 404)
+        assert "root:" not in client.get("/..%2F..%2Fetc%2Fpasswd").text
+    app.state.obole.engine.dispose()
+
+
+def test_rematch_with_corrected_reading(client, fake_numista, fake_ollama):
+    corrected = {**EXTRACTION, "country": "Allemagne", "denomination_text": "10 Euro", "year": 2008}
+    body = client.post("/api/match", json={"extraction": corrected}).json()
+    assert body["match"]["issuer_code"] == "germany"
+    first_search = next(r for r in fake_numista.requests if r.url.path.endswith("/types"))
+    assert first_search.url.params["q"] == "10 Euro"
+    assert first_search.url.params["issuer"] == "germany"
+    assert fake_ollama.chat_payloads == []  # le modèle n'est pas rappelé
+    fake_numista.fail_with = 500
+    body = client.post("/api/match", json={"extraction": {**corrected, "year": 1999}}).json()
+    assert body["match"] is None
+    assert "Recherche Numista impossible" in body["errors"][0]

@@ -94,4 +94,5 @@ class Stats(SQLModel):
     total_quantity: int
     countries: int
     by_type: dict[str, int]
+    by_country: dict[str, int]  # pays -> nombre d'objets, du plus fréquent au moins fréquent
     estimated_value_total: float

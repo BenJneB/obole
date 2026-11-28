@@ -22,6 +22,7 @@ class AppState:
     engine: Engine
     numista: NumistaClient
     ollama_transport: httpx.AsyncBaseTransport | None = None  # injecté par les tests
+    web_transport: httpx.AsyncBaseTransport | None = None  # miniatures Numista (tests)
     # Index des émetteurs et ids des catégories Numista, chargés une fois (depuis le cache SQLite)
     _issuer_index: matching.IssuerIndex | None = None
     _type_ids: dict[str, int] | None = None
@@ -32,6 +33,10 @@ class AppState:
     @property
     def data_dir(self) -> Path:
         return self.settings.data_path
+
+    @property
+    def thumbs_cache_dir(self) -> Path:
+        return self.data_dir / "cache" / "thumbs"
 
     async def matching_context(self) -> tuple[matching.IssuerIndex, dict[str, int]]:
         async with self._lock:

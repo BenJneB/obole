@@ -79,6 +79,12 @@ class FakeNumista:
         self.types_handler: Callable[[dict], dict] = lambda params: {
             "count": 2, "types": [numista_type(1001), numista_type(1002, "2 Euro (Marianne)")]
         }
+        # Ma collection Numista (OAuth) : objets renvoyés par GET /users/42/collected_items
+        self.collection: list[dict] = []
+        self.posted: list[dict] = []  # corps des POST /users/42/collected_items
+        self.tokens_issued = 0
+        self.reject_token: str | None = None  # jeton à refuser (401), pour simuler une expiration
+        self.deny_collection = False  # tous les jetons refusés (droits insuffisants)
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -94,6 +100,26 @@ class FakeNumista:
             return httpx.Response(200, json={"object_types": OBJECT_TYPES})
         if path == "/types":
             return httpx.Response(200, json=self.types_handler(params))
+        if path == "/oauth_token":
+            assert params["grant_type"] == "client_credentials"
+            assert set(params["scope"].split(",")) == {"view_collection", "edit_collection"}
+            self.tokens_issued += 1
+            return httpx.Response(200, json={
+                "access_token": f"token-{self.tokens_issued}", "token_type": "bearer",
+                "expires_in": 7200, "user_id": 42,
+            })
+        if path == "/users/42/collected_items":
+            token = request.headers.get("Authorization", "").removeprefix("Bearer ")
+            if not token.startswith("token-") or token == self.reject_token or self.deny_collection:
+                return httpx.Response(401, json={"error_message": "Invalid token"})
+            if request.method == "POST":
+                body = json.loads(request.content)
+                self.posted.append(body)
+                entry = {"id": 900 + len(self.posted), "quantity": body["quantity"],
+                         "type": {"id": body["type"], "title": f"Type {body['type']}"}}
+                self.collection.append(entry)
+                return httpx.Response(201, json=entry)
+            return httpx.Response(200, json={"item_count": len(self.collection), "items": self.collection})
         if path.startswith("/types/"):
             type_id = int(path.split("/")[2])
             if type_id == 404:
@@ -182,6 +208,30 @@ def fake_ollama() -> FakeOllama:
     return FakeOllama()
 
 
+class FakeWeb:
+    """Site Numista simulé : sert les miniatures des fiches (re-classement)."""
+
+    def __init__(self):
+        self.requests: list[httpx.Request] = []
+        self.images: dict[str, bytes] = {}  # chemin -> image ; absent = 404
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        data = self.images.get(request.url.path)
+        if data is None:
+            return httpx.Response(404)
+        return httpx.Response(200, content=data, headers={"Content-Type": "image/jpeg"})
+
+    @property
+    def transport(self) -> httpx.MockTransport:
+        return httpx.MockTransport(self.handler)
+
+
+@pytest.fixture
+def fake_web() -> FakeWeb:
+    return FakeWeb()
+
+
 @pytest.fixture
 def engine(data_dir: Path):
     engine = make_engine(data_dir)
@@ -196,9 +246,10 @@ def numista_client(engine, fake_numista: FakeNumista) -> NumistaClient:
 
 
 @pytest.fixture
-def client(settings: Settings, fake_numista: FakeNumista, fake_ollama: FakeOllama):
+def client(settings: Settings, fake_numista: FakeNumista, fake_ollama: FakeOllama, fake_web: "FakeWeb"):
     app = create_app(
-        settings, numista_transport=fake_numista.transport, ollama_transport=fake_ollama.transport
+        settings, numista_transport=fake_numista.transport, ollama_transport=fake_ollama.transport,
+        web_transport=fake_web.transport,
     )
     with TestClient(app) as test_client:
         yield test_client

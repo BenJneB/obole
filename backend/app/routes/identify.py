@@ -4,13 +4,13 @@ import asyncio
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, File, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from .. import storage
 from ..deps import AppState, StateDep
-from ..schemas import IdentifyResponse, MatchRead, QuotaRead
-from ..services import matching, vision
+from ..schemas import IdentifyResponse, MatchRead, QuotaRead, RerankRead, RerankRequest
+from ..services import matching, rerank, vision
 from ..services.numista import NumistaError
 
 log = logging.getLogger(__name__)
@@ -38,14 +38,17 @@ async def identify(
     upload_id, paths = await asyncio.to_thread(storage.save_upload, state.data_dir, photos)
     await asyncio.to_thread(storage.purge_old_uploads, state.data_dir)
 
-    response = IdentifyResponse(upload_id=upload_id, sides=list(paths), quota=quota_of(state))
     settings = state.settings
+    response = IdentifyResponse(
+        upload_id=upload_id, sides=list(paths), quota=quota_of(state), rerank=settings.rerank
+    )
     try:
         result = await vision.identify(
             list(paths.values()),
             ollama_url=settings.ollama_url,
             model=settings.vision_model,
             num_ctx=settings.vision_num_ctx,
+            auto_crop=settings.auto_crop,
             transport=state.ollama_transport,
         )
     except vision.VisionError as exc:
@@ -91,3 +94,38 @@ async def rematch(body: MatchRequest, state: StateDep) -> MatchResponse:
     """Relance la recherche Numista à partir d'une lecture corrigée à la main (sans le modèle)."""
     match, errors = await _search(state, body.extraction)
     return MatchResponse(match=match, errors=errors, quota=quota_of(state))
+
+
+@router.post("/rerank", response_model=RerankRead)
+async def rerank_candidates(body: RerankRequest, state: StateDep) -> RerankRead:
+    """Seconde analyse : le modèle compare les photos d'un envoi aux miniatures des candidats et
+    désigne la fiche qui correspond. Appelée par le frontend après l'affichage des résultats,
+    pour ne pas allonger l'identification. Aucun quota Numista consommé."""
+    settings = state.settings
+    if not settings.rerank:
+        raise HTTPException(409, "Re-classement désactivé (RERANK=false dans .env)")
+    files = await asyncio.to_thread(storage.upload_files, state.data_dir, body.upload_id)
+    photos = [files[side] for side in ("obverse", "reverse") if side in files]
+    if len(body.candidates) < 2:
+        raise HTTPException(422, "Au moins 2 candidats à départager")
+    try:
+        result = await rerank.rerank(
+            photos,
+            [rerank.RerankCandidate(c.id, c.obverse_thumbnail, c.reverse_thumbnail) for c in body.candidates],
+            ollama_url=settings.ollama_url,
+            model=settings.vision_model,
+            num_ctx=settings.vision_num_ctx,
+            auto_crop=settings.auto_crop,
+            cache_dir=state.thumbs_cache_dir,
+            ollama_transport=state.ollama_transport,
+            web_transport=state.web_transport,
+        )
+    except vision.VisionError as exc:
+        log.warning("Échec du re-classement : %s", exc)
+        raise HTTPException(502, f"Re-classement impossible : {exc}") from exc
+    return RerankRead(
+        order=result.order, verdict=result.verdict, best_id=result.best_id,
+        confidence=round(result.confidence, 2),
+        reason=result.reason, model=result.model, seconds=round(result.seconds, 1),
+        missing_thumbnails=result.missing_thumbnails,
+    )

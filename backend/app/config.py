@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     # Taille du contexte du modèle (tokens). Deux images à 768 px en consomment ~1 800.
     # 8192 fait déborder qwen2.5vl:7b de la VRAM (8 Go) sur le CPU : beaucoup plus lent.
     vision_num_ctx: int = 4096
+    # Phase 4 : recadrage automatique de l'objet (image envoyée au modèle et miniatures ;
+    # les photos originales ne sont jamais modifiées)
+    auto_crop: bool = True
+    # Phase 4 : re-classement des candidats Numista par le modèle (photo + miniatures des fiches)
+    rerank: bool = True
 
     numista_api_key: SecretStr = SecretStr("")
     numista_base_url: str = "https://api.numista.com/v3"

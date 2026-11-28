@@ -168,6 +168,18 @@ export default function Settings() {
         </section>
       )}
 
+      {quota?.configured && (
+        <section className="panel">
+          <h2>Ma collection sur Numista</h2>
+          <p className="muted small">
+            Comparer Obole avec ta collection sur le site Numista, puis ajouter d'un côté ce qui manque de l'autre.
+          </p>
+          <Link className="btn small" to="/reglages/numista">
+            Synchroniser avec Numista
+          </Link>
+        </section>
+      )}
+
       <BackupPanel />
 
       <section className="panel">

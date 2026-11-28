@@ -294,11 +294,22 @@ uv run --project backend python scripts/poc_identify.py --search "20 Kopecks" --
 
 # Banc d'essai : toutes les photos de data/test-photos, plusieurs modèles comparés
 uv run --project backend python scripts/poc_identify.py --bench --models gemma4:e4b,qwen2.5vl:7b
+
+# Idem, en mesurant aussi le re-classement visuel (rang avant / après) ; --no-crop : sans recadrage
+uv run --project backend python scripts/poc_identify.py --bench --rerank
 ```
 
 **Photos de test** : `data/test-photos/NN_avers.jpg` et `NN_revers.jpg`. Le fichier `attendu.csv` (colonnes `id,object_type,numista_id,description,photos`) donne la bonne réponse de chaque objet ; le banc d'essai calcule combien sont trouvés dans les 5 premiers candidats et le temps moyen. Le détail de chaque passage est enregistré dans `data/poc-results/bench-<date>.csv`.
 
-**Quota Numista** : chaque réponse est gardée en cache 90 jours (table `numista_cache` de la base SQLite). Relancer le même test ne consomme donc presque rien. Le compteur du mois (table `api_usage`) est visible via `/api/health`. L'ancien cache fichier du POC (`data/cache/`) a été repris automatiquement dans la base au premier lancement ; ce dossier peut être supprimé.
+**Quota Numista** : chaque réponse est gardée en cache 90 jours (table `numista_cache` de la base SQLite). Relancer le même test ne consomme donc presque rien. Le compteur du mois (table `api_usage`) est visible via `/api/health`. L'ancien cache fichier du POC (`data/cache/numista/`, `data/cache/numista_usage.json`) a été repris automatiquement dans la base au premier lancement et peut être supprimé ; garder `data/cache/thumbs/` (miniatures Numista du re-classement, recréées au besoin).
+
+## 5 ter. Recadrage, re-classement et synchronisation Numista (Phase 4)
+
+**Recadrage automatique** (`AUTO_CROP=true`) : sur une photo prise sur un fond uni, l'objet est détecté et recadré avant l'analyse, et la miniature est recadrée elle aussi. **La photo originale n'est jamais modifiée** (visible en entier sur la fiche). Si le fond n'est pas uni ou si l'objet remplit déjà la photo, rien n'est recadré. Les miniatures des objets ajoutés avant la Phase 4 ne sont pas recalculées.
+
+**Re-classement visuel** (`RERANK=true`) : une fois les fiches Numista affichées, le modèle compare la photo aux miniatures des candidats (« Comparaison visuelle avec les fiches… ») et met en tête celle qui correspond, avec le badge **Choix de l'IA**. La question est posée deux fois, candidats dans l'ordre puis dans l'ordre inverse : le badge n'apparaît que si les deux réponses concordent (sinon « l'IA hésite », et l'ordre Numista est gardé). Raison : le modèle a tendance à désigner la première ligne quand il doute. Coût : ~2 s sur le PC, aucun quota Numista (les miniatures viennent du site, en cache dans `data/cache/thumbs/`).
+
+**Synchronisation avec ma collection Numista** (Réglages → *Synchroniser avec Numista*) : compare Obole et ta collection sur numista.com, fiche par fiche (N#). Pour chaque fiche, un bouton ajoute **seulement les exemplaires manquants** de l'autre côté : *Ajouter sur Numista* ou *Importer* dans Obole. Rien n'est jamais supprimé ni modifié. L'accès utilise la même clé API (jeton OAuth « client_credentials », droits lecture + écriture de la collection) : rien d'autre à configurer. Chaque comparaison ou action consomme 1 ou 2 requêtes du quota. L'état est transmis sous forme de grade Numista (AB→g, B→vg, TB→f, TTB→vf, SUP→xf, SPL→au, UNC/FDC→unc) seulement s'il est le même pour tous les exemplaires. Les objets sans N# ne sont pas comparés.
 
 ---
 

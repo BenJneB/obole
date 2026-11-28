@@ -14,8 +14,14 @@ from .config import Settings, get_settings
 from .db import init_db, make_engine
 from .deps import AppState
 from .frontend import mount_frontend
-from .routes import export, identify, items, numista, system
-from .services.numista import NumistaClient, NumistaError, NumistaNotFound, QuotaError
+from .routes import export, identify, items, numista, numista_collection, system
+from .services.numista import (
+    NumistaAuthError,
+    NumistaClient,
+    NumistaError,
+    NumistaNotFound,
+    QuotaError,
+)
 
 log = logging.getLogger("obole")
 
@@ -25,8 +31,10 @@ def create_app(
     *,
     numista_transport: httpx.AsyncBaseTransport | None = None,
     ollama_transport: httpx.AsyncBaseTransport | None = None,
+    web_transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
-    """Les transports httpx permettent aux tests de simuler Numista et Ollama sans réseau."""
+    """Les transports httpx permettent aux tests de simuler Numista, Ollama et le site Numista
+    (miniatures) sans réseau."""
     settings = settings or get_settings()
     data_dir = settings.data_path
     engine = make_engine(data_dir)
@@ -42,6 +50,7 @@ def create_app(
             transport=numista_transport,
         ),
         ollama_transport=ollama_transport,
+        web_transport=web_transport,
     )
 
     @asynccontextmanager
@@ -72,9 +81,14 @@ def create_app(
 
     @app.exception_handler(NumistaError)
     async def _numista_error(_request: Request, exc: NumistaError) -> JSONResponse:
-        status = 404 if isinstance(exc, NumistaNotFound) else 429 if isinstance(exc, QuotaError) else 502
+        status = (
+            404 if isinstance(exc, NumistaNotFound)
+            else 429 if isinstance(exc, QuotaError)
+            else 403 if isinstance(exc, NumistaAuthError)
+            else 502
+        )
         return JSONResponse({"detail": str(exc)}, status_code=status)
-    for module in (identify, items, numista, export, system):
+    for module in (identify, items, numista_collection, numista, export, system):
         app.include_router(module.router, prefix="/api")
     # En dernier : la route « attrape-tout » du frontend ne doit pas masquer l'API
     if not mount_frontend(app, settings.frontend_dist):

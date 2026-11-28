@@ -4,7 +4,8 @@
   DATA_DIR/uploads/<upload_id>/<side>.<ext>, supprimés après UPLOAD_TTL.
 - Photos de la collection : DATA_DIR/photos/<item_id>/<n>_<side>.<ext> + miniature <n>_<side>_thumb.jpg.
 
-L'original est gardé tel quel (aucune perte de qualité) ; seule la miniature est recalculée.
+L'original est gardé tel quel (aucune perte de qualité) ; seule la miniature est recalculée
+(recadrée sur l'objet si AUTO_CROP est actif).
 Les chemins enregistrés en base sont relatifs à DATA_DIR et utilisent "/" (portables).
 """
 
@@ -16,6 +17,8 @@ import uuid
 from pathlib import Path
 
 from PIL import Image, ImageOps, UnidentifiedImageError
+
+from .services.crop import autocrop
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 THUMB_SIDE = 400
@@ -48,13 +51,19 @@ def check_image(data: bytes) -> str:
     return FORMAT_EXTENSIONS[fmt]
 
 
-def make_thumbnail(source: Path, target: Path) -> None:
+def make_thumbnail(source: Path, target: Path, auto_crop: bool = False) -> None:
+    """Miniature JPEG ; `auto_crop` : recadrée sur l'objet (l'original reste intact)."""
     with Image.open(source) as img:
-        img.thumbnail((THUMB_SIDE, THUMB_SIDE))  # avant exif_transpose : décodage réduit du JPEG
+        # Avant exif_transpose : décodage réduit du JPEG. Avec recadrage, marge de résolution.
+        side = THUMB_SIDE * 3 if auto_crop else THUMB_SIDE
+        img.thumbnail((side, side))
         img = ImageOps.exif_transpose(img)
         if img.mode != "RGB":
             img = img.convert("RGB")
-        img.save(target, "JPEG", quality=85)
+    if auto_crop:
+        img = autocrop(img)
+    img.thumbnail((THUMB_SIDE, THUMB_SIDE))
+    img.save(target, "JPEG", quality=85)
 
 
 def rel(data_dir: Path, path: Path) -> str:
@@ -125,7 +134,9 @@ def item_dir(data_dir: Path, item_id: int) -> Path:
     return data_dir / "photos" / str(item_id)
 
 
-def store_item_photo(data_dir: Path, item_id: int, side: str, source: Path | bytes) -> tuple[str, str]:
+def store_item_photo(
+    data_dir: Path, item_id: int, side: str, source: Path | bytes, auto_crop: bool = False
+) -> tuple[str, str]:
     """Copie une photo dans le dossier de l'objet et crée sa miniature. Renvoie (path, thumb_path)."""
     data = source.read_bytes() if isinstance(source, Path) else source
     ext = check_image(data)
@@ -136,7 +147,7 @@ def store_item_photo(data_dir: Path, item_id: int, side: str, source: Path | byt
     thumb = folder / f"{stem}_thumb.jpg"
     path.write_bytes(data)
     try:
-        make_thumbnail(path, thumb)
+        make_thumbnail(path, thumb, auto_crop)
     except Exception:
         path.unlink(missing_ok=True)
         raise

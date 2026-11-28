@@ -82,7 +82,9 @@ def create_item(
     stored: list[str] = []
     try:
         for side, path in uploads.items():
-            photo_path, thumb_path = storage.store_item_photo(state.data_dir, item.id, side, path)
+            photo_path, thumb_path = storage.store_item_photo(
+                state.data_dir, item.id, side, path, state.settings.auto_crop
+            )
             stored += [photo_path, thumb_path]
             session.add(Photo(item_id=item.id, side=PhotoSide(side), path=photo_path, thumb_path=thumb_path))
         session.commit()
@@ -283,7 +285,9 @@ def add_photo(
 ) -> PhotoRead:
     item = _get_item(session, item_id)
     # Route synchrone : lecture, vérification et miniature tournent hors de la boucle asyncio
-    path, thumb = storage.store_item_photo(state.data_dir, item_id, side.value, file.file.read())
+    path, thumb = storage.store_item_photo(
+        state.data_dir, item_id, side.value, file.file.read(), state.settings.auto_crop
+    )
     photo = Photo(item_id=item_id, side=side, path=path, thumb_path=thumb)
     item.updated_at = utcnow()
     session.add(photo)

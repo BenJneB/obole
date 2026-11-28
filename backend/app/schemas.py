@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 from sqlmodel import SQLModel
@@ -100,6 +101,26 @@ class IdentifyResponse(BaseModel):
     # Messages d'erreur à afficher ; l'identification peut être partielle (repli : saisie manuelle)
     errors: list[str] = []
     quota: QuotaRead
+    # Re-classement visuel disponible (RERANK=true) : le frontend appelle ensuite /api/rerank
+    rerank: bool = False
+
+
+class RerankRequest(BaseModel):
+    upload_id: str
+    candidates: list[CandidateRead]
+
+
+class RerankRead(BaseModel):
+    order: list[int]  # ids des candidats, le choix du modèle en premier
+    # match : choix confirmé par les deux passes ; none : aucune fiche ne correspond ;
+    # unsure : les deux passes se contredisent (ordre de Numista conservé)
+    verdict: Literal["match", "none", "unsure"]
+    best_id: int | None
+    confidence: float
+    reason: str
+    model: str
+    seconds: float
+    missing_thumbnails: int
 
 
 class Stats(SQLModel):

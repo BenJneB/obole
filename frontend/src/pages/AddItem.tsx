@@ -11,6 +11,7 @@ import {
   type Match,
   type ObjectType,
   type OwnedItem,
+  type Rerank,
 } from '../api.ts'
 import CandidateCard from '../components/CandidateCard.tsx'
 import ItemForm from '../components/ItemForm.tsx'
@@ -62,7 +63,15 @@ function useOwned(numistaIds: number[]): Record<number, OwnedItem[]> {
 }
 
 /** Liste de fiches Numista, chacune marquée si elle est déjà dans la collection. */
-function CandidateList({ candidates, onChoose }: { candidates: Candidate[]; onChoose: (c: Candidate) => void }) {
+function CandidateList({
+  candidates,
+  onChoose,
+  pick,
+}: {
+  candidates: Candidate[]
+  onChoose: (c: Candidate) => void
+  pick?: Rerank | null
+}) {
   const owned = useOwned(candidates.map((c) => c.id))
   return (
     <ul className="candidates">
@@ -72,11 +81,39 @@ function CandidateList({ candidates, onChoose }: { candidates: Candidate[]; onCh
             candidate={c}
             owned={(owned[c.id] ?? []).reduce((n, i) => n + i.quantity, 0)}
             onChoose={() => onChoose(c)}
+            pick={pick?.best_id === c.id ? pick : undefined}
           />
         </li>
       ))}
     </ul>
   )
+}
+
+type RerankState = { key: string; data: Rerank | null; error: string | null }
+
+/** Re-classement visuel des candidats (seconde analyse, lancée après l'affichage des résultats).
+ *  Renvoie les candidats réordonnés : le choix du modèle d'abord. */
+function useRerank(result: IdentifyResponse, candidates: Candidate[]) {
+  const enabled = result.rerank && result.extraction != null && candidates.length >= 2
+  const key = enabled ? `${result.upload_id}:${candidates.map((c) => c.id).join(',')}` : ''
+  const [state, setState] = useState<RerankState>({ key: '', data: null, error: null })
+  useEffect(() => {
+    if (!key) return
+    const controller = new AbortController()
+    api
+      .rerank(result.upload_id, candidates, controller.signal)
+      .then((data) => setState({ key, data, error: null }))
+      .catch((e: Error) => !controller.signal.aborted && setState({ key, data: null, error: e.message }))
+    return () => controller.abort()
+    // `key` résume upload_id et candidats : inutile de relancer pour un nouveau tableau identique
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key])
+  const current = state.key === key && key ? state : null
+  const data = current?.data ?? null
+  const ordered = data
+    ? [...candidates].sort((a, b) => data.order.indexOf(a.id) - data.order.indexOf(b.id))
+    : candidates
+  return { running: Boolean(key) && !current, data, error: current?.error ?? null, ordered }
 }
 
 /** Champs corrigeables de la lecture de l'IA, en texte (valeurs des <input>). */
@@ -383,6 +420,7 @@ function Results({
   const [searching, setSearching] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const candidates = result.match?.candidates ?? []
+  const rerank = useRerank(result, candidates)
   const changed = extraction && EDITABLE.some(({ key }) => draft[key] !== initialDraft[key])
 
   async function researchWithCorrection() {
@@ -453,7 +491,24 @@ function Results({
       {candidates.length > 0 && (
         <section>
           <h2>Fiches Numista proposées</h2>
-          <CandidateList candidates={candidates} onChoose={onChoose} />
+          {rerank.running && (
+            <p className="muted small rerank-status" role="status">
+              <span className="spinner small" aria-hidden /> Comparaison visuelle avec les fiches…
+            </p>
+          )}
+          {rerank.data?.verdict === 'none' && (
+            <p className="muted small" role="status">
+              Comparaison visuelle : aucune fiche ne correspond vraiment selon l'IA
+              {rerank.data.reason ? ` (${rerank.data.reason})` : ''}.
+            </p>
+          )}
+          {rerank.data?.verdict === 'unsure' && (
+            <p className="muted small" role="status">
+              Comparaison visuelle : l'IA hésite entre plusieurs fiches, à toi de trancher.
+            </p>
+          )}
+          {rerank.error && <p className="muted small">{rerank.error}</p>}
+          <CandidateList candidates={rerank.ordered} onChoose={onChoose} pick={rerank.data} />
         </section>
       )}
 

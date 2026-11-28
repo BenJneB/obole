@@ -11,6 +11,8 @@ from pathlib import Path
 import httpx
 from PIL import Image, ImageOps
 
+from . import crop
+
 MAX_SIDE = 768  # côté long envoyé au modèle (px) : ~900 tokens par image, tient en VRAM avec num_ctx 4096
 # Longueur maximale de la réponse (tokens). Une réponse normale en fait 150 à 300 ; sans limite, un
 # modèle qui recopie des inscriptions en boucle peut remplir le contexte et renvoyer un JSON tronqué.
@@ -70,12 +72,14 @@ SIDES_TWO = "The first image is the obverse, the second image is the reverse of 
 SIDES_ONE = "Only one image is provided (it may show one side, or both sides next to each other)."
 
 
-def prepare_image(path: Path) -> str:
-    """Redresse (EXIF), convertit en RGB, réduit à MAX_SIDE px et renvoie le JPEG en base64."""
+def load_image(path: Path, max_side: int = MAX_SIDE, auto_crop: bool = False) -> Image.Image:
+    """Ouvre une photo redressée (EXIF), en RGB sur fond blanc, réduite à `max_side` px.
+    `auto_crop` : recadrée sur l'objet avant la réduction (voir crop.py)."""
     with Image.open(path) as img:
         # Réduire d'abord : thumbnail() ne décode qu'une fraction du JPEG (draft), alors que
-        # exif_transpose() forcerait le décodage complet. Cadre carré : même taille finale.
-        img.thumbnail((MAX_SIDE, MAX_SIDE))
+        # exif_transpose() forcerait le décodage complet. Avec recadrage, on garde 3x plus de
+        # pixels pour que l'objet recadré conserve sa netteté.
+        img.thumbnail((max_side * 3, max_side * 3) if auto_crop else (max_side, max_side))
         img = ImageOps.exif_transpose(img)
         if img.mode in ("RGBA", "LA", "P"):
             img = img.convert("RGBA")
@@ -83,9 +87,21 @@ def prepare_image(path: Path) -> str:
             background.paste(img, mask=img.getchannel("A"))
             img = background
         img = img.convert("RGB")
-        buffer = io.BytesIO()
-        img.save(buffer, "JPEG", quality=90)
+    if auto_crop:
+        img = crop.autocrop(img)
+    img.thumbnail((max_side, max_side))
+    return img
+
+
+def encode_jpeg(img: Image.Image) -> str:
+    buffer = io.BytesIO()
+    img.save(buffer, "JPEG", quality=90)
     return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def prepare_image(path: Path, auto_crop: bool = False) -> str:
+    """Photo prête pour le modèle : JPEG en base64, côté long MAX_SIDE px."""
+    return encode_jpeg(load_image(path, MAX_SIDE, auto_crop))
 
 
 @dataclass
@@ -124,36 +140,29 @@ async def model_capabilities(
     return _capabilities_cache[key]
 
 
-async def identify(
-    images: list[Path],
+async def chat_json(
+    images: list[str],
+    prompt: str,
+    schema: dict,
     *,
     ollama_url: str,
     model: str,
     num_ctx: int = 4096,
+    max_output_tokens: int = MAX_OUTPUT_TOKENS,
     timeout: float = 300.0,
-    transport: httpx.AsyncBaseTransport | None = None,  # injecté par les tests
+    transport: httpx.AsyncBaseTransport | None = None,
 ) -> VisionResult:
-    """Envoie 1 ou 2 photos (avers, revers) au modèle et renvoie l'extraction structurée."""
-    if not 1 <= len(images) <= 2:
-        raise ValueError("1 ou 2 images attendues (avers, revers)")
+    """Un message (texte + images en base64) au modèle, réponse JSON imposée par `schema`."""
     capabilities = await model_capabilities(ollama_url, model, transport=transport)
     if "vision" not in capabilities:
         raise VisionError(f"Le modèle {model} ne lit pas les images (capacités : {capabilities})")
     payload = {
         "model": model,
-        "messages": [
-            {
-                "role": "user",
-                "content": PROMPT.format(
-                    sides=SIDES_TWO if len(images) == 2 else SIDES_ONE, max_inscriptions=MAX_INSCRIPTIONS
-                ),
-                "images": await asyncio.gather(*(asyncio.to_thread(prepare_image, p) for p in images)),
-            }
-        ],
-        "format": EXTRACTION_SCHEMA,
+        "messages": [{"role": "user", "content": prompt, "images": images}],
+        "format": schema,
         "stream": False,
         "keep_alive": "30m",
-        "options": {"temperature": 0, "num_ctx": num_ctx, "num_predict": MAX_OUTPUT_TOKENS},
+        "options": {"temperature": 0, "num_ctx": num_ctx, "num_predict": max_output_tokens},
     }
     if "thinking" in capabilities:
         # Phase de "réflexion" désactivée : bien plus lente, et inutile pour une extraction de texte
@@ -174,18 +183,43 @@ async def identify(
     content = data.get("message", {}).get("content", "")
     if data.get("done_reason") == "length":
         raise VisionError(
-            f"Réponse du modèle tronquée (plus de {MAX_OUTPUT_TOKENS} tokens) : "
+            f"Réponse du modèle tronquée (plus de {max_output_tokens} tokens) : "
             "réessayer avec une photo plus nette, ou saisir l'objet à la main."
         )
     try:
-        extraction = json.loads(content)
+        parsed = json.loads(content)
     except json.JSONDecodeError as exc:
         raise VisionError(f"Réponse du modèle non JSON : {content[:300]}") from exc
+    if not isinstance(parsed, dict):
+        raise VisionError(f"Réponse du modèle inattendue : {content[:300]}")
     return VisionResult(
-        extraction=extraction,
+        extraction=parsed,
         model=model,
         seconds=elapsed,
         prompt_tokens=data.get("prompt_eval_count"),
         output_tokens=data.get("eval_count"),
         load_seconds=(data.get("load_duration") or 0) / 1e9,
+    )
+
+
+async def identify(
+    images: list[Path],
+    *,
+    ollama_url: str,
+    model: str,
+    num_ctx: int = 4096,
+    auto_crop: bool = False,
+    timeout: float = 300.0,
+    transport: httpx.AsyncBaseTransport | None = None,  # injecté par les tests
+) -> VisionResult:
+    """Envoie 1 ou 2 photos (avers, revers) au modèle et renvoie l'extraction structurée."""
+    if not 1 <= len(images) <= 2:
+        raise ValueError("1 ou 2 images attendues (avers, revers)")
+    encoded = await asyncio.gather(*(asyncio.to_thread(prepare_image, p, auto_crop) for p in images))
+    prompt = PROMPT.format(
+        sides=SIDES_TWO if len(images) == 2 else SIDES_ONE, max_inscriptions=MAX_INSCRIPTIONS
+    )
+    return await chat_json(
+        list(encoded), prompt, EXTRACTION_SCHEMA,
+        ollama_url=ollama_url, model=model, num_ctx=num_ctx, timeout=timeout, transport=transport,
     )

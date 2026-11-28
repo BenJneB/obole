@@ -97,6 +97,43 @@ export interface IdentifyResponse {
   match: Match | null
   errors: string[]
   quota: Quota
+  /** Re-classement visuel disponible : appeler ensuite api.rerank (RERANK=true sur le serveur). */
+  rerank: boolean
+}
+
+/** Choix du modèle parmi les candidats, d'après leurs miniatures (POST /api/rerank). */
+export interface Rerank {
+  order: number[]
+  /** match : choix confirmé par deux passes (ordre inversé) ; none : aucune fiche ; unsure : l'IA hésite */
+  verdict: 'match' | 'none' | 'unsure'
+  best_id: number | null
+  confidence: number
+  reason: string
+  model: string
+  seconds: number
+  missing_thumbnails: number
+}
+
+/** Une fiche Numista comparée entre Obole et ma collection sur Numista. */
+export interface TypeComparison {
+  numista_id: number
+  title: string
+  url: string
+  numista_quantity: number
+  obole_quantity: number
+  obole_item_ids: number[]
+}
+
+export interface CollectionComparison {
+  user_id: number
+  only_obole: TypeComparison[]
+  only_numista: TypeComparison[]
+  different: TypeComparison[]
+  same: number
+  obole_without_numista: number
+  numista_entries: number
+  unreadable_entries: number
+  quota: Quota
 }
 
 export interface MatchResponse {
@@ -222,6 +259,16 @@ export const api = {
   deletePhoto: (itemId: number, photoId: number) =>
     request<void>(`/api/items/${itemId}/photos/${photoId}`, { method: 'DELETE' }),
   rematch: (extraction: Extraction) => request<MatchResponse>('/api/match', json('POST', { extraction })),
+  rerank: (uploadId: string, candidates: Candidate[], signal?: AbortSignal) =>
+    request<Rerank>('/api/rerank', { ...json('POST', { upload_id: uploadId, candidates }), signal }),
+  compareCollection: () => request<CollectionComparison>('/api/numista/collection/compare'),
+  pushToNumista: (numistaId: number) =>
+    request<{ numista_id: number; added: number; grade: string | null; quota: Quota }>(
+      '/api/numista/collection/push',
+      json('POST', { numista_id: numistaId }),
+    ),
+  importFromNumista: (numistaId: number) =>
+    request<Item>('/api/numista/collection/import', json('POST', { numista_id: numistaId })),
   searchNumista(q: string, objectType?: ObjectType): Promise<Candidate[]> {
     const params = new URLSearchParams({ q, count: '20' })
     if (objectType && objectType !== 'unknown') params.set('object_type', objectType)

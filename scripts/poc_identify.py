@@ -11,7 +11,11 @@ Lancer depuis la racine du dépôt :
   # Banc d'essai sur data/test-photos (attendu.csv), en comparant plusieurs modèles
   uv run --project backend python scripts/poc_identify.py --bench --models gemma4:e4b,qwen2.5vl:7b
 
-Options : --model, --num-ctx, --no-numista (extraction seule), --json (sortie brute).
+  # Phase 4 : mesurer le re-classement visuel des candidats (rang avant / après)
+  uv run --project backend python scripts/poc_identify.py --bench --rerank
+
+Options : --model, --num-ctx, --no-numista (extraction seule), --json (sortie brute),
+--no-crop (sans recadrage automatique), --rerank (re-classement visuel, mode --bench).
 Ce script ne touche pas à la collection : il lit les photos et n'écrit que dans le cache Numista
 (base SQLite de DATA_DIR, partagé avec le serveur) et data/poc-results.
 """
@@ -31,7 +35,7 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 
 from app.config import get_settings  # noqa: E402
 from app.db import init_db, make_engine  # noqa: E402
-from app.services import matching, vision  # noqa: E402
+from app.services import matching, rerank, vision  # noqa: E402
 from app.services.numista import NumistaClient, NumistaError  # noqa: E402
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -81,9 +85,11 @@ def print_candidates(match: matching.MatchResult) -> None:
         print(f"     {'':>7}  {c.url}")
 
 
-async def identify_one(images: list[Path], model: str, num_ctx: int, use_numista: bool):
+async def identify_one(images: list[Path], model: str, num_ctx: int, use_numista: bool,
+                       auto_crop: bool):
     s = get_settings()
-    result = await vision.identify(images, ollama_url=s.ollama_url, model=model, num_ctx=num_ctx)
+    result = await vision.identify(images, ollama_url=s.ollama_url, model=model, num_ctx=num_ctx,
+                                   auto_crop=auto_crop)
     match = None
     if use_numista:
         client = numista_client()
@@ -100,7 +106,8 @@ async def cmd_identify(args) -> int:
             print(f"Photo introuvable : {p}", file=sys.stderr)
             return 2
     try:
-        result, match = await identify_one(images, args.model, args.num_ctx, not args.no_numista)
+        result, match = await identify_one(images, args.model, args.num_ctx, not args.no_numista,
+                                           not args.no_crop)
     except (vision.VisionError, NumistaError) as exc:
         print(f"Erreur : {exc}", file=sys.stderr)
         return 1
@@ -144,7 +151,8 @@ async def cmd_bench(args) -> int:
     out_file = out_dir / f"bench-{datetime.now():%Y%m%d-%H%M%S}.csv"
     records = []
     fields = ["model", "id", "description", "expected", "rank", "seconds", "prompt_tokens", "country",
-              "issuer_code", "denomination", "year", "candidates", "queries", "error"]
+              "issuer_code", "denomination", "year", "candidates", "queries", "rerank_rank",
+              "rerank_seconds", "rerank_reason", "error"]
     # Écriture au fil de l'eau : un arrêt en cours de route ne perd pas les résultats déjà obtenus
     out = out_file.open("w", encoding="utf-8", newline="")
     writer = csv.DictWriter(out, fieldnames=fields, restval="")
@@ -160,7 +168,8 @@ async def cmd_bench(args) -> int:
         # Préchauffage : le premier appel charge le modèle en VRAM, ne pas le compter dans les temps
         first = photos_dir / rows[0]["photos"].split()[0]
         try:
-            await vision.identify([first], ollama_url=s.ollama_url, model=model, num_ctx=args.num_ctx)
+            await vision.identify([first], ollama_url=s.ollama_url, model=model, num_ctx=args.num_ctx,
+                                  auto_crop=not args.no_crop)
         except vision.VisionError as exc:
             print(f"  Modèle indisponible : {exc}")
             continue
@@ -169,7 +178,7 @@ async def cmd_bench(args) -> int:
             expected = int(row["numista_id"]) if row.get("numista_id", "").strip() else None
             try:
                 result = await vision.identify(images, ollama_url=s.ollama_url, model=model,
-                                               num_ctx=args.num_ctx)
+                                               num_ctx=args.num_ctx, auto_crop=not args.no_crop)
                 match = await matching.find_candidates(client, index, result.extraction, type_ids)
             except (vision.VisionError, NumistaError) as exc:
                 print(f"  {row['id']} ERREUR : {exc}")
@@ -182,7 +191,27 @@ async def cmd_bench(args) -> int:
             print(f"  {row['id']} {verdict:<12} {result.seconds:5.1f} s  "
                   f"lu: {e.get('country')} / {e.get('denomination_text')} / {e.get('year')}  "
                   f"-> {ids[:5]}  ({row['description']})")
-            save({
+            reranked = {}
+            if args.rerank and len(match.candidates) >= 2:
+                try:
+                    rr = await rerank.rerank(
+                        images,
+                        [rerank.RerankCandidate(c.id, c.obverse_thumbnail, c.reverse_thumbnail)
+                         for c in match.candidates],
+                        ollama_url=s.ollama_url, model=model, num_ctx=args.num_ctx,
+                        auto_crop=not args.no_crop, cache_dir=s.data_path / "cache" / "thumbs",
+                    )
+                    new_rank = rr.order.index(expected) + 1 if expected in rr.order else None
+                    reranked = {"rerank_rank": new_rank, "rerank_seconds": round(rr.seconds, 1),
+                                "rerank_reason": rr.reason}
+                    answers = [a.get("best") for a in rr.answers]
+                    print(f"       re-classement : rang {rank} -> {new_rank}  ({rr.seconds:.1f} s, "
+                          f"{rr.verdict}, choix {rr.best_id}, réponses {answers}) {rr.reason}")
+                except vision.VisionError as exc:
+                    print(f"       re-classement impossible : {exc}")
+            elif args.rerank:
+                reranked = {"rerank_rank": rank}  # 0 ou 1 candidat : rien à départager
+            save({**reranked,
                 "model": model, "id": row["id"], "description": row["description"],
                 "expected": expected, "rank": rank, "seconds": round(result.seconds, 1),
                 "prompt_tokens": result.prompt_tokens, "country": e.get("country"),
@@ -202,8 +231,17 @@ async def cmd_bench(args) -> int:
         hits = sum(1 for r in scored if r["rank"])
         times = [r["seconds"] for r in recs]
         tokens = [r["prompt_tokens"] for r in recs if r["prompt_tokens"]]
-        print(f"{model:<16} top 5 : {hits}/{len(scored)}   temps moyen {statistics.mean(times):.1f} s "
+        top1 = sum(1 for r in scored if r["rank"] == 1)
+        print(f"{model:<16} top 5 : {hits}/{len(scored)}   top 1 : {top1}/{len(scored)}   "
+              f"temps moyen {statistics.mean(times):.1f} s "
               f"(max {max(times):.1f} s)   tokens entrée max {max(tokens) if tokens else '?'}")
+        if args.rerank:
+            top1_after = sum(1 for r in scored if r.get("rerank_rank") == 1)
+            worse = sum(1 for r in scored if r["rank"] == 1 and r.get("rerank_rank") != 1)
+            rerank_times = [r["rerank_seconds"] for r in recs if r.get("rerank_seconds")]
+            mean_rr = f"{statistics.mean(rerank_times):.1f} s" if rerank_times else "?"
+            print(f"{'':<16} après re-classement : top 1 {top1_after}/{len(scored)} "
+                  f"(dont {worse} dégradé(s))   temps moyen du re-classement {mean_rr}")
     print(f"Détail : {out_file}")
     print(f"Requêtes Numista envoyées : {client.network_requests} "
           f"(total ce mois-ci : {client.used_this_month()}/{client.monthly_quota})")
@@ -218,6 +256,9 @@ def main() -> int:
     parser.add_argument("--num-ctx", type=int, default=s.vision_num_ctx, help="contexte du modèle (tokens)")
     parser.add_argument("--no-numista", action="store_true", help="extraction seule, sans Numista")
     parser.add_argument("--json", action="store_true", help="afficher l'extraction en JSON brut")
+    parser.add_argument("--no-crop", action="store_true", help="sans recadrage automatique des photos")
+    parser.add_argument("--rerank", action="store_true",
+                        help="--bench : mesurer aussi le re-classement visuel des candidats")
     parser.add_argument("--search", help="recherche manuelle dans Numista")
     parser.add_argument("--issuer", help="code émetteur Numista pour --search (ex. france)")
     parser.add_argument("--year", help="année grégorienne pour --search")

@@ -3,6 +3,7 @@ import { useRegisterSW } from 'virtual:pwa-register/react'
 import AddItem from './pages/AddItem.tsx'
 import Collection from './pages/Collection.tsx'
 import ItemPage from './pages/ItemPage.tsx'
+import NumistaSync from './pages/NumistaSync.tsx'
 import Settings from './pages/Settings.tsx'
 import StatsPage from './pages/StatsPage.tsx'
 
@@ -33,6 +34,7 @@ export default function App() {
           <Route path="/objet/:id" element={<ItemPage />} />
           <Route path="/stats" element={<StatsPage />} />
           <Route path="/reglages" element={<Settings />} />
+          <Route path="/reglages/numista" element={<NumistaSync />} />
           <Route path="*" element={<p className="empty">Page introuvable.</p>} />
         </Routes>
       </main>
